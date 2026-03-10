@@ -1,0 +1,34 @@
+{
+  "users": [
+    {
+      "id": "admin",
+      "username": "klord",
+      "password": "Kl0rd777",
+      "isAdmin": true,
+      "createdAt": "2026-03-10T06:30:50.458Z",
+      "expiresAt": "3050-12-30",
+      "maxConnections": 999,
+      "activeConnections": 0,
+      "status": "Active",
+      "notes": "Administrador do sistema"
+    },
+    {
+      "id": "8fd7f2416366e524",
+      "username": "teste",
+      "password": "tst",
+      "isAdmin": false,
+      "createdAt": "2026-03-10T06:36:22.194Z",
+      "expiresAt": "2026-04-09",
+      "maxConnections": 1,
+      "activeConnections": 1,
+      "status": "Active",
+      "notes": ""
+    }
+  ],
+  "settings": {
+    "serverName": "Meu Servidor IPTV",
+    "maxConcurrentConnections": 1000,
+    "defaultExpiryDays": 30,
+    "defaultMaxConnections": 1
+  }
+}
