@@ -27,7 +27,7 @@
     {
       "id": "x72posi5u2a",
       "username": "123",
-      "password": "234",
+      "password": "123",
       "isAdmin": false,
       "createdAt": "2026-03-11T00:22:09.057Z",
       "expiresAt": "2026-04-10",
@@ -44,5 +44,5 @@
     "defaultExpiryDays": 30,
     "defaultMaxConnections": 1
   },
-  "_sha": "9caa35de7219ca90f7c99e098d0efd39fa83843c"
+  "_sha": "7881abe5db8d27f56336a2d591764d2bb536cb7b"
 }
