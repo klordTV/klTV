@@ -23,6 +23,19 @@
       "activeConnections": 1,
       "status": "Active",
       "notes": ""
+    },
+    {
+      "id": "mft4rurj6ce",
+      "username": "daniel",
+      "password": "Sw@gfod4",
+      "isAdmin": false,
+      "createdAt": "2026-03-11T00:11:05.742Z",
+      "expiresAt": "2026-04-10",
+      "maxConnections": 1,
+      "activeConnections": 0,
+      "status": "Active",
+      "notes": "",
+      "createdBy": "klord"
     }
   ],
   "settings": {
@@ -31,5 +44,5 @@
     "defaultExpiryDays": 30,
     "defaultMaxConnections": 1
   },
-  "_sha": "550c73bc527e02c0b289e384592e1db6d5d1eb0d"
+  "_sha": "fc1501f8c3bc48d7a1d05beb4a8b38f17047e3bb"
 }
