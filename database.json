@@ -13,19 +13,6 @@
       "notes": "Administrador do sistema"
     },
     {
-      "id": "rf35wdqtnq",
-      "username": "c",
-      "password": "c",
-      "isAdmin": false,
-      "createdAt": "2026-03-11T10:49:25.307Z",
-      "expiresAt": "2026-04-10",
-      "maxConnections": 1,
-      "activeConnections": 0,
-      "status": "Active",
-      "notes": "",
-      "createdBy": "klord"
-    },
-    {
       "id": "flbvuc8oj2k",
       "username": "cliente",
       "password": "adm777",
@@ -45,5 +32,5 @@
     "defaultExpiryDays": 30,
     "defaultMaxConnections": 1
   },
-  "_sha": "172fef7a105c1e87fd76908c997fc445a2b0e6e3"
+  "_sha": "56a75ecbe7c5002d7261900e5f5642d500083fad"
 }
