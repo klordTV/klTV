@@ -25,19 +25,6 @@
       "notes": ""
     },
     {
-      "id": "mft4rurj6ce",
-      "username": "daniel",
-      "password": "Sw@gfod4",
-      "isAdmin": false,
-      "createdAt": "2026-03-11T00:11:05.742Z",
-      "expiresAt": "2026-04-10",
-      "maxConnections": 1,
-      "activeConnections": 0,
-      "status": "Active",
-      "notes": "",
-      "createdBy": "klord"
-    },
-    {
       "id": "118clle1znt",
       "username": "gg",
       "password": "gg",
@@ -57,5 +44,5 @@
     "defaultExpiryDays": 30,
     "defaultMaxConnections": 1
   },
-  "_sha": "0bbc597e1afe8ac8c979ecf5d06187aad4ec4e74"
+  "_sha": "68d2be6fc4e776b56218195193bf6a7f89e7c302"
 }
