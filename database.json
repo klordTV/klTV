@@ -36,6 +36,19 @@
       "status": "Active",
       "notes": "",
       "createdBy": "klord"
+    },
+    {
+      "id": "5r0arrq68h",
+      "username": "cliente077 se adicionar funciona",
+      "password": "klord123",
+      "isAdmin": false,
+      "createdAt": "2026-03-11T00:33:13.588Z",
+      "expiresAt": "2026-04-10",
+      "maxConnections": 1,
+      "activeConnections": 0,
+      "status": "Active",
+      "notes": "",
+      "createdBy": "klord"
     }
   ],
   "settings": {
@@ -44,5 +57,5 @@
     "defaultExpiryDays": 30,
     "defaultMaxConnections": 1
   },
-  "_sha": "2e69789306ae6db9f5a10468fa53e723afb72542"
+  "_sha": "cde51e5bc386fdb26df90d4c765d253fe9d4c865"
 }
