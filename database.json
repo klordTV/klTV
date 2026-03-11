@@ -36,19 +36,6 @@
       "status": "Active",
       "notes": "",
       "createdBy": "klord"
-    },
-    {
-      "id": "pj5m1h4piwi",
-      "username": "cliente",
-      "password": "123",
-      "isAdmin": false,
-      "createdAt": "2026-03-11T02:59:05.006Z",
-      "expiresAt": "2026-04-10",
-      "maxConnections": 6,
-      "activeConnections": 0,
-      "status": "Active",
-      "notes": "",
-      "createdBy": "adm"
     }
   ],
   "settings": {
@@ -57,5 +44,5 @@
     "defaultExpiryDays": 30,
     "defaultMaxConnections": 1
   },
-  "_sha": "04775113d107f04b0a91655c0de948af9f326f4a"
+  "_sha": "1059923a2d00b37c5150c09d8aa865a1d071f5f8"
 }
