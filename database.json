@@ -36,6 +36,19 @@
       "status": "Active",
       "notes": "",
       "createdBy": "klord"
+    },
+    {
+      "id": "118clle1znt",
+      "username": "gg",
+      "password": "gg",
+      "isAdmin": false,
+      "createdAt": "2026-03-11T00:15:37.311Z",
+      "expiresAt": "2026-04-10",
+      "maxConnections": 1,
+      "activeConnections": 0,
+      "status": "Active",
+      "notes": "",
+      "createdBy": "klord"
     }
   ],
   "settings": {
@@ -44,5 +57,5 @@
     "defaultExpiryDays": 30,
     "defaultMaxConnections": 1
   },
-  "_sha": "fc1501f8c3bc48d7a1d05beb4a8b38f17047e3bb"
+  "_sha": "0bbc597e1afe8ac8c979ecf5d06187aad4ec4e74"
 }
