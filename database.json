@@ -13,18 +13,6 @@
       "notes": "Administrador do sistema"
     },
     {
-      "id": "8fd7f2416366e524",
-      "username": "teste",
-      "password": "tst",
-      "isAdmin": false,
-      "createdAt": "2026-03-10T06:36:22.194Z",
-      "expiresAt": "2026-04-09",
-      "maxConnections": 1,
-      "activeConnections": 1,
-      "status": "Active",
-      "notes": ""
-    },
-    {
       "id": "rf35wdqtnq",
       "username": "c",
       "password": "c",
@@ -57,5 +45,5 @@
     "defaultExpiryDays": 30,
     "defaultMaxConnections": 1
   },
-  "_sha": "ba0035639db6438db773deb65028fb9c9d836140"
+  "_sha": "172fef7a105c1e87fd76908c997fc445a2b0e6e3"
 }
