@@ -11,6 +11,19 @@
       "activeConnections": 0,
       "status": "Active",
       "notes": "Administrador do sistema"
+    },
+    {
+      "id": "5sr2uk0qaif",
+      "username": "daniel",
+      "password": "daniel96",
+      "isAdmin": false,
+      "createdAt": "2026-03-11T11:02:43.217Z",
+      "expiresAt": "2028-08-27",
+      "maxConnections": 2,
+      "activeConnections": 0,
+      "status": "Active",
+      "notes": "",
+      "createdBy": "klord"
     }
   ],
   "settings": {
@@ -19,5 +32,5 @@
     "defaultExpiryDays": 30,
     "defaultMaxConnections": 1
   },
-  "_sha": "e29120bdd23f90dae5bf2c1ce2140619869ad109"
+  "_sha": "6ef1b2e8e9e852e5eb95382ab80369d8b62ec158"
 }
