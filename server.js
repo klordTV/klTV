@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 // ==================== CONFIGURAÇÃO GITHUB E RENDER ====================
 const CONFIG = {
     // GitHub Config
-    GITHUB_TOKEN: "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",
+    GITHUB_TOKEN: "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",
     GITHUB_OWNER: "klordTV",
     GITHUB_REPO: "klTV",
     GITHUB_FILE_PATH: "database.json",
@@ -1891,5 +1891,6 @@ async function initialize() {
 }
 
 initialize();
+
 
 
