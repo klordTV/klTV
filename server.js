@@ -123,68 +123,42 @@ function isExpired(user) {
     return new Date(user.expiresAt) < new Date();
 }
 
-// ==================== FUNÇÃO PROXY STREAMING MELHORADA ====================
+// ==================== FUNÇÃO PROXY STREAMING ====================
 
-// Configurações do proxy
-const PROXY_CONFIG = {
-    timeout: 60000,        // 60 segundos de timeout
-    highWaterMark: 65536 // 64KB buffer
-};
-
+// Função para fazer proxy de streams (resolve problema de playback error)
 function proxyStream(streamUrl, req, res) {
     try {
-        const parsedUrl = new URL(streamUrl);
-        const isHttps = parsedUrl.protocol === 'https:';
-        const httpModule = isHttps ? https : http;
+        const parsedUrl = url.parse(streamUrl);
+        const protocol = parsedUrl.protocol === 'https:' ? https : http;
 
-        // Headers otimizados para compatibilidade máxima
         const options = {
             hostname: parsedUrl.hostname,
-            port: parsedUrl.port || (isHttps ? 443 : 80),
-            path: parsedUrl.pathname + parsedUrl.search,
+            port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+            path: parsedUrl.path,
             method: 'GET',
-            timeout: PROXY_CONFIG.timeout,
             headers: {
-                'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'User-Agent': req.headers['user-agent'] || 'VLC/3.0.18 LibVLC/3.0.18',
                 'Accept': '*/*',
-                'Accept-Encoding': 'identity;q=1, *;q=0',
-                'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
-                'Cache-Control': 'no-cache',
+                'Accept-Encoding': 'identity',
                 'Connection': 'keep-alive',
-                'Pragma': 'no-cache',
                 'Icy-MetaData': '1'
             }
         };
 
-        // Preservar headers importantes do cliente original
+        // Copiar alguns headers importantes da requisição original
         if (req.headers['range']) {
             options.headers['Range'] = req.headers['range'];
         }
-        if (req.headers['cookie']) {
-            options.headers['Cookie'] = req.headers['cookie'];
-        }
-        if (req.headers['referer']) {
-            options.headers['Referer'] = req.headers['referer'];
-        }
 
-        const proxyReq = httpModule.request(options, (proxyRes) => {
-            // Se for redirect, seguir automaticamente (até 3 níveis)
-            if ([301, 302, 307, 308].includes(proxyRes.statusCode)) {
-                const newUrl = proxyRes.headers.location;
-                if (newUrl) {
-                    console.log(`🔄 Redirect detectado: ${newUrl.substring(0, 80)}...`);
-                    return proxyStream(newUrl, req, res);
-                }
-            }
-
-            // Definir status
+        const proxyReq = protocol.request(options, (proxyRes) => {
+            // Copiar status code
             res.statusCode = proxyRes.statusCode;
 
-            // Headers que devem ser copiados para o cliente
+            // Copiar headers importantes
             const headersToCopy = [
                 'content-type', 'content-length', 'content-range', 
-                'accept-ranges', 'cache-control', 'etag', 'last-modified',
-                'icy-metadata', 'icy-name', 'icy-genre', 'icy-br', 'icy-description'
+                'accept-ranges', 'cache-control', 'icy-metadata',
+                'icy-name', 'icy-genre', 'icy-br'
             ];
 
             headersToCopy.forEach(header => {
@@ -193,63 +167,30 @@ function proxyStream(streamUrl, req, res) {
                 }
             });
 
-            // Garantir content-type apropriado se não estiver presente
-            if (!proxyRes.headers['content-type']) {
-                if (streamUrl.includes('.ts') || req.path.includes('.ts')) {
-                    res.setHeader('Content-Type', 'video/MP2T');
-                } else if (streamUrl.includes('.mp4') || req.path.includes('.mp4')) {
-                    res.setHeader('Content-Type', 'video/mp4');
-                } else if (streamUrl.includes('.m3u') || streamUrl.includes('.m3u8')) {
-                    res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-                } else {
-                    res.setHeader('Content-Type', 'video/mp2t'); // Default para streams
-                }
-            }
-
-            // Permitir CORS
-            res.setHeader('Access-Control-Allow-Origin', '*');
-            res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges');
-
-            // Pipe com tratamento de erro
-            proxyRes.on('error', (err) => {
-                console.error('❌ Erro no stream de origem:', err.message);
-                if (!res.headersSent) {
-                    res.status(502).end();
-                } else {
-                    res.end();
-                }
-            });
-
-            proxyRes.pipe(res, { end: true });
+            // Pipe do stream
+            proxyRes.pipe(res);
         });
 
         proxyReq.on('error', (err) => {
-            console.error('❌ Erro na requisição proxy:', err.message);
+            console.error('Erro no proxy:', err.message);
             if (!res.headersSent) {
-                res.status(502).send('Erro ao conectar ao stream');
+                res.status(502).send('Erro ao carregar stream');
             }
         });
 
-        proxyReq.on('timeout', () => {
-            console.error('⏱️ Timeout na requisição');
+        // Timeout para evitar conexões travadas
+        proxyReq.setTimeout(30000, () => {
             proxyReq.destroy();
             if (!res.headersSent) {
                 res.status(504).send('Timeout do stream');
             }
         });
 
-        // Fechar conexão se cliente desconectar
-        req.on('close', () => {
-            proxyReq.destroy();
-        });
-
         proxyReq.end();
 
     } catch (error) {
-        console.error('❌ Erro ao criar proxy:', error);
-        if (!res.headersSent) {
-            res.status(500).send('Erro interno do servidor');
-        }
+        console.error('Erro ao criar proxy:', error);
+        res.status(500).send('Erro interno');
     }
 }
 
@@ -594,7 +535,7 @@ app.get("/player_api.php", (req, res) => {
     res.json({ error: "Ação não suportada", action });
 });
 
-// Endpoints de streaming COM PROXY
+// Endpoints de streaming - AGORA COM PROXY EM VEZ DE REDIRECT
 
 app.get("/live/:username/:password/:stream_id.ts", (req, res) => {
     const { username, password, stream_id } = req.params;
@@ -603,7 +544,6 @@ app.get("/live/:username/:password/:stream_id.ts", (req, res) => {
 
     const channel = live.find(c => c.stream_id === stream_id);
     if (channel && channel.direct_source) {
-        console.log(`📺 Proxy Live: ${channel.name} (${channel.direct_source.substring(0, 60)}...)`);
         return proxyStream(channel.direct_source, req, res);
     }
     res.status(404).send("Stream não encontrado");
@@ -616,7 +556,6 @@ app.get("/movie/:username/:password/:stream_id.mp4", (req, res) => {
 
     const movie = vod.find(v => v.stream_id === stream_id);
     if (movie && movie.direct_source) {
-        console.log(`🎬 Proxy Movie: ${movie.name}`);
         return proxyStream(movie.direct_source, req, res);
     }
     res.status(404).send("Filme não encontrado");
@@ -632,7 +571,6 @@ app.get("/series/:username/:password/:stream_id.mp4", (req, res) => {
         for (let seasonNum in serie.seasons) {
             const ep = serie.seasons[seasonNum].find(e => e.id === stream_id);
             if (ep) {
-                console.log(`📺 Proxy Series: ${serieName} - ${ep.title}`);
                 return proxyStream(ep.url, req, res);
             }
         }
@@ -640,7 +578,7 @@ app.get("/series/:username/:password/:stream_id.mp4", (req, res) => {
     res.status(404).send("Episódio não encontrado");
 });
 
-// Endpoint para gerar lista M3U
+// Endpoint para gerar lista M3U completa
 app.get("/get.php", (req, res) => {
     const { username, password, type } = req.query;
     const user = db.users.find(u => u.username === username && u.password === password);
