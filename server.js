@@ -2,24 +2,9 @@ const fs = require("fs");
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
-const https = require("https");
-const http = require("http");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// ==================== CONFIGURAÇÃO GITHUB E RENDER ====================
-const CONFIG = {
-    // GitHub Config
-    GITHUB_TOKEN: "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",
-    GITHUB_OWNER: "klordTV",
-    GITHUB_REPO: "klTV",
-    GITHUB_FILE_PATH: "database.json",
-    GITHUB_BRANCH: "main", // ou "master", dependendo da branch padrão
-    
-    // Render Deploy
-    RENDER_DEPLOY_URL: "https://api.render.com/deploy/srv-d6o4ric50q8c73ddcucg?key=GZ3X3EIsQTY"
-};
+const PORT = 3000;
 
 // Middleware essenciais
 app.use(express.json());
@@ -36,7 +21,6 @@ app.use((req, res, next) => {
 
 // Banco de dados simples (JSON)
 const DB_FILE = path.join(__dirname, "database.json");
-const M3U_SOURCES_FILE = path.join(__dirname, "m3u_sources.json");
 
 // Estrutura inicial do banco
 let db = {
@@ -45,227 +29,101 @@ let db = {
         serverName: "Meu Servidor IPTV",
         maxConcurrentConnections: 1000,
         defaultExpiryDays: 30,
-        defaultMaxConnections: 1,
-        baseUrl: process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`
+        defaultMaxConnections: 1
     }
 };
 
 // Gerenciar tokens ativos (sessões)
 let activeTokens = new Set();
 
-// ==================== FUNÇÕES GITHUB API ====================
-
-/**
- * Atualiza o arquivo database.json no GitHub
- * Fluxo: Edita arquivo -> Commit -> Deploy Render
- */
-async function updateGitHubFile(content, message) {
-    return new Promise(async (resolve, reject) => {
-        try {
-            // 1. Primeiro, pegar o SHA atual do arquivo (necessário para update)
-            const currentFile = await getGitHubFileSha();
+// Carregar banco de dados
+function loadDatabase() {
+    try {
+        if (fs.existsSync(DB_FILE)) {
+            const data = fs.readFileSync(DB_FILE, "utf8");
+            db = JSON.parse(data);
+            console.log("💾 Banco de dados carregado");
             
-            if (!currentFile.success && currentFile.error !== 'File not found') {
-                throw new Error(`Erro ao obter SHA: ${currentFile.error}`);
-            }
-
-            const contentEncoded = Buffer.from(JSON.stringify(content, null, 2)).toString('base64');
-            
-            const postData = JSON.stringify({
-                message: message || "Update database.json via IPTV Panel",
-                content: contentEncoded,
-                sha: currentFile.sha, // SHA atual do arquivo (obrigatório para update)
-                branch: CONFIG.GITHUB_BRANCH,
-                committer: {
-                    name: "IPTV Panel",
-                    email: "panel@iptv.local"
-                },
-                author: {
-                    name: "IPTV Panel",
-                    email: "panel@iptv.local"
-                }
-            });
-
-            const options = {
-                hostname: 'api.github.com',
-                port: 443,
-                path: `/repos/${CONFIG.GITHUB_OWNER}/${CONFIG.GITHUB_REPO}/contents/${CONFIG.GITHUB_FILE_PATH}`,
-                method: 'PUT',
-                headers: {
-                    'Authorization': `Bearer ${CONFIG.GITHUB_TOKEN}`,
-                    'Accept': 'application/vnd.github+json',
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'IPTV-Panel/1.0',
-                    'Content-Length': Buffer.byteLength(postData)
-                }
-            };
-
-            console.log(`📝 Atualizando arquivo no GitHub: ${CONFIG.GITHUB_FILE_PATH}`);
-            console.log(`   Branch: ${CONFIG.GITHUB_BRANCH}`);
-            console.log(`   Mensagem: ${message}`);
-
-            const req = https.request(options, (res) => {
-                let data = '';
-                res.on('data', chunk => data += chunk);
-                res.on('end', () => {
-                    try {
-                        const response = JSON.parse(data);
-                        
-                        if (res.statusCode === 200 || res.statusCode === 201) {
-                            console.log(`✅ Arquivo atualizado no GitHub!`);
-                            console.log(`   Commit SHA: ${response.commit?.sha?.substring(0, 7)}`);
-                            console.log(`   HTML URL: ${response.content?.html_url}`);
-                            
-                            resolve({
-                                success: true,
-                                commitSha: response.commit?.sha,
-                                contentSha: response.content?.sha,
-                                htmlUrl: response.content?.html_url,
-                                message: "Arquivo atualizado com sucesso no GitHub"
-                            });
-                        } else {
-                            console.error(`❌ Erro GitHub API: ${res.statusCode}`, response);
-                            resolve({
-                                success: false,
-                                error: response.message || `HTTP ${res.statusCode}`,
-                                details: response
-                            });
-                        }
-                    } catch (e) {
-                        resolve({ success: false, error: "Erro ao parsear resposta: " + e.message });
-                    }
-                });
-            });
-
-            req.on('error', (err) => {
-                console.error('❌ Erro na requisição GitHub:', err);
-                resolve({ success: false, error: err.message });
-            });
-
-            req.write(postData);
-            req.end();
-
-        } catch (error) {
-            console.error('❌ Erro em updateGitHubFile:', error);
-            resolve({ success: false, error: error.message });
-        }
-    });
-}
-
-/**
- * Obtém o SHA atual do arquivo no GitHub (necessário para updates)
- */
-function getGitHubFileSha() {
-    return new Promise((resolve) => {
-        const options = {
-            hostname: 'api.github.com',
-            port: 443,
-            path: `/repos/${CONFIG.GITHUB_OWNER}/${CONFIG.GITHUB_REPO}/contents/${CONFIG.GITHUB_FILE_PATH}?ref=${CONFIG.GITHUB_BRANCH}`,
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${CONFIG.GITHUB_TOKEN}`,
-                'Accept': 'application/vnd.github+json',
-                'User-Agent': 'IPTV-Panel/1.0'
-            }
-        };
-
-        const req = https.request(options, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-                try {
-                    if (res.statusCode === 404) {
-                        resolve({ success: false, error: 'File not found', sha: null });
-                        return;
-                    }
-                    
-                    const response = JSON.parse(data);
-                    if (res.statusCode === 200 && response.sha) {
-                        resolve({ success: true, sha: response.sha, content: response });
-                    } else {
-                        resolve({ success: false, error: response.message || 'Unknown error', sha: null });
-                    }
-                } catch (e) {
-                    resolve({ success: false, error: e.message, sha: null });
-                }
-            });
-        });
-
-        req.on('error', (err) => {
-            resolve({ success: false, error: err.message, sha: null });
-        });
-
-        req.end();
-    });
-}
-
-// ==================== FUNÇÃO DEPLOY RENDER ====================
-
-function triggerRenderDeploy() {
-    return new Promise((resolve, reject) => {
-        console.log("🚀 Acionando deploy no Render...");
-        
-        https.get(CONFIG.RENDER_DEPLOY_URL, (res) => {
-            if (res.statusCode === 200) {
-                console.log("✅ Deploy do Render acionado com sucesso!");
-                resolve({ success: true, message: "Deploy acionado" });
+            // Verificar se admin existe, se não criar
+            const adminExists = db.users.find(u => u.isAdmin === true);
+            if (!adminExists) {
+                console.log("⚠️ Admin não encontrado, criando novo...");
+                createDefaultAdmin();
             } else {
-                console.warn(`⚠️  Deploy retornou status ${res.statusCode}`);
-                resolve({ success: false, status: res.statusCode });
+                console.log("✅ Admin encontrado:", adminExists.username);
             }
-        }).on('error', (err) => {
-            console.error("❌ Erro ao acionar deploy:", err.message);
-            resolve({ success: false, error: err.message });
-        });
-    });
-}
-
-/**
- * FLUXO COMPLETO: Salvar no GitHub -> Deploy Render
- * Esta função é chamada após qualquer modificação no banco de dados
- */
-async function syncToGitHubAndDeploy(actionDescription) {
-    console.log(`\n🔄 Iniciando sincronização: ${actionDescription}`);
-    console.log("========================================");
-    
-    // 1. Salvar localmente primeiro (backup)
-    saveDatabase();
-    
-    // 2. Atualizar no GitHub
-    const gitResult = await updateGitHubFile(db, actionDescription);
-    
-    if (!gitResult.success) {
-        console.error("❌ Falha ao atualizar GitHub:", gitResult.error);
-        return { 
-            success: false, 
-            stage: 'github', 
-            error: gitResult.error,
-            message: "Dados salvos localmente, mas falha ao sincronizar com GitHub"
-        };
+        } else {
+            console.log("⚠️ Banco de dados não existe, criando novo...");
+            createDefaultAdmin();
+        }
+    } catch (error) {
+        console.error("Erro ao carregar banco:", error);
+        createDefaultAdmin();
     }
-    
-    console.log("✅ GitHub atualizado com sucesso!");
-    
-    // 3. Acionar deploy no Render (aguarda um pouco para o GitHub processar)
-    console.log("⏳ Aguardando 3 segundos para GitHub processar commit...");
-    await new Promise(r => setTimeout(r, 3000));
-    
-    const deployResult = await triggerRenderDeploy();
-    
-    console.log("========================================");
-    console.log("✅ Sincronização concluída!");
-    
-    return {
-        success: true,
-        github: gitResult,
-        deploy: deployResult,
-        message: "Dados sincronizados com GitHub e deploy acionado no Render"
-    };
 }
 
-// ==================== GERENCIAMENTO DE FONTES M3U ====================
+// Criar admin padrão
+function createDefaultAdmin() {
+    // Remover qualquer admin existente para garantir
+    db.users = db.users.filter(u => !u.isAdmin);
+    
+    const adminUser = {
+        id: "admin",
+        username: "klord",
+        password: "Kl0rd777",
+        isAdmin: true,
+        createdAt: new Date().toISOString(),
+        expiresAt: "never",
+        maxConnections: 999,
+        activeConnections: 0,
+        status: "Active",
+        notes: "Administrador do sistema"
+    };
+    
+    db.users.push(adminUser);
+    saveDatabase();
+    console.log("✅ Admin criado: klord / Kl0rd777");
+}
 
-let m3uSources = [];
+// Salvar banco de dados
+function saveDatabase() {
+    try {
+        fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+    } catch (error) {
+        console.error("Erro ao salvar banco:", error);
+    }
+}
+
+// Gerar ID único
+function generateId() {
+    return crypto.randomBytes(8).toString("hex");
+}
+
+// Gerar senha aleatória
+function generatePassword(length = 8) {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let password = "";
+    for (let i = 0; i < length; i++) {
+        password += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return password;
+}
+
+// Calcular data de vencimento
+function calculateExpiryDate(days) {
+    const date = new Date();
+    date.setDate(date.getDate() + parseInt(days));
+    return date.toISOString().split("T")[0];
+}
+
+// Verificar se usuário expirou
+function isExpired(user) {
+    if (user.expiresAt === "never") return false;
+    return new Date(user.expiresAt) < new Date();
+}
+
+// ==================== DADOS IPTV ====================
+
 let live = [];
 let vod = [];
 let series = {};
@@ -282,239 +140,86 @@ let catIdCounters = {
     series: 1
 };
 
-// Carregar fontes M3U
-function loadM3USources() {
+function parseM3U() {
     try {
-        if (fs.existsSync(M3U_SOURCES_FILE)) {
-            const data = fs.readFileSync(M3U_SOURCES_FILE, "utf8");
-            m3uSources = JSON.parse(data);
-            console.log(`📋 ${m3uSources.length} fontes M3U carregadas`);
-        } else {
-            m3uSources = [];
-            saveM3USources();
+        const filePath = path.join(__dirname, "playlist.m3u");
+        
+        if (!fs.existsSync(filePath)) {
+            console.error("⚠️  Arquivo playlist.m3u não encontrado!");
+            return;
         }
+
+        const content = fs.readFileSync(filePath, "utf8");
+        const lines = content.split(/\r?\n/);
+        
+        let current = null;
+        let id = 1;
+
+        for (let line of lines) {
+            line = line.trim();
+            if (!line) continue;
+
+            if (line.startsWith("#EXTINF")) {
+                const tvgNameMatch = line.match(/tvg-name="([^"]*)"/);
+                let name = tvgNameMatch ? tvgNameMatch[1] : "";
+                
+                if (!name) {
+                    const commaIndex = line.lastIndexOf(",");
+                    name = commaIndex !== -1 ? line.substring(commaIndex + 1).trim() : "Sem Nome";
+                }
+                
+                const groupMatch = line.match(/group-title="([^"]*)"/i);
+                let group = groupMatch ? groupMatch[1] : "OUTROS";
+                
+                const logoMatch = line.match(/tvg-logo="([^"]*)"/i);
+                let icon = logoMatch ? logoMatch[1] : "";
+
+                current = {
+                    id: id++,
+                    name: name,
+                    group: group,
+                    icon: icon,
+                    rawLine: line
+                };
+            }
+            else if (line.startsWith("http") && current) {
+                current.url = line;
+                const groupUpper = current.group.toUpperCase();
+                
+                if (groupUpper.startsWith("FILMES") || groupUpper.startsWith("FILME")) {
+                    parseMovie(current);
+                }
+                else if (groupUpper.startsWith("-SERIES") || groupUpper.startsWith("SERIES") || groupUpper.startsWith("SÉRIES")) {
+                    parseSeries(current);
+                }
+                else if (groupUpper.startsWith("CANAIS") || groupUpper.startsWith("CANAL")) {
+                    parseLive(current);
+                }
+                else {
+                    if (current.name.match(/S\d+E\d+/i)) {
+                        parseSeries(current);
+                    } else {
+                        parseLive(current);
+                    }
+                }
+                current = null;
+            }
+        }
+
+        console.log("✅ Parser concluído:");
+        console.log(`   Canais: ${live.length} (categorias: ${categories.live.length})`);
+        console.log(`   Filmes: ${vod.length} (categorias: ${categories.vod.length})`);
+        console.log(`   Séries: ${Object.keys(series).length} (categorias: ${categories.series.length})`);
+        
     } catch (error) {
-        console.error("Erro ao carregar fontes M3U:", error);
-        m3uSources = [];
+        console.error("ERRO ao parsear M3U:", error.message);
     }
-}
-
-// Salvar fontes M3U
-function saveM3USources() {
-    try {
-        fs.writeFileSync(M3U_SOURCES_FILE, JSON.stringify(m3uSources, null, 2));
-    } catch (error) {
-        console.error("Erro ao salvar fontes M3U:", error);
-    }
-}
-
-// Função para fazer download de URL M3U
-function downloadM3U(url) {
-    return new Promise((resolve, reject) => {
-        const client = url.startsWith('https') ? https : http;
-        
-        console.log(`⬇️  Baixando M3U: ${url.substring(0, 60)}...`);
-        
-        const request = client.get(url, {
-            timeout: 30000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-        }, (response) => {
-            if (response.statusCode === 301 || response.statusCode === 302) {
-                return downloadM3U(response.headers.location).then(resolve).catch(reject);
-            }
-            
-            if (response.statusCode !== 200) {
-                reject(new Error(`Status code: ${response.statusCode}`));
-                return;
-            }
-
-            let data = '';
-            response.on('data', chunk => data += chunk);
-            response.on('end', () => {
-                console.log(`✅ Download concluído: ${(data.length / 1024).toFixed(2)} KB`);
-                resolve(data);
-            });
-        });
-
-        request.on('error', (err) => {
-            console.error(`❌ Erro no download: ${err.message}`);
-            reject(err);
-        });
-        
-        request.on('timeout', () => {
-            request.destroy();
-            reject(new Error('Timeout'));
-        });
-    });
-}
-
-// Adicionar nova fonte M3U
-async function addM3USource(name, url, type = 'all') {
-    try {
-        await downloadM3U(url);
-        
-        const source = {
-            id: generateId(),
-            name: name,
-            url: url,
-            type: type,
-            enabled: true,
-            lastUpdate: new Date().toISOString(),
-            status: 'active'
-        };
-        
-        m3uSources = m3uSources.filter(s => s.name !== name);
-        m3uSources.push(source);
-        saveM3USources();
-        
-        console.log(`✅ Fonte adicionada: ${name}`);
-        return { success: true, source };
-    } catch (error) {
-        console.error(`❌ Erro ao adicionar fonte ${name}:`, error.message);
-        return { success: false, error: error.message };
-    }
-}
-
-// Remover fonte M3U
-function removeM3USource(id) {
-    const index = m3uSources.findIndex(s => s.id === id);
-    if (index !== -1) {
-        const name = m3uSources[index].name;
-        m3uSources.splice(index, 1);
-        saveM3USources();
-        console.log(`🗑️  Fonte removida: ${name}`);
-        return true;
-    }
-    return false;
-}
-
-// ==================== PARSE M3U MELHORADO ====================
-
-async function parseAllM3USources() {
-    console.log("\n🔄 Iniciando parse de todas as fontes M3U...");
-    
-    live = [];
-    vod = [];
-    series = {};
-    categories = { live: [], vod: [], series: [] };
-    groupToId = {};
-    catIdCounters = { live: 1, vod: 1, series: 1 };
-    
-    let totalSources = 0;
-    let successSources = 0;
-    
-    if (fs.existsSync(path.join(__dirname, "playlist.m3u"))) {
-        console.log("📁 Processando playlist.m3u local...");
-        parseM3UContent(fs.readFileSync(path.join(__dirname, "playlist.m3u"), "utf8"), "Local");
-        totalSources++;
-        successSources++;
-    }
-    
-    for (const source of m3uSources.filter(s => s.enabled)) {
-        totalSources++;
-        try {
-            const content = await downloadM3U(source.url);
-            parseM3UContent(content, source.name, source.type);
-            source.lastUpdate = new Date().toISOString();
-            source.status = 'active';
-            source.lastError = null;
-            successSources++;
-            console.log(`✅ Fonte processada: ${source.name}`);
-        } catch (error) {
-            source.status = 'error';
-            source.lastError = error.message;
-            console.error(`❌ Erro na fonte ${source.name}:`, error.message);
-        }
-    }
-    
-    saveM3USources();
-    console.log(`\n📊 Resumo do parse:`);
-    console.log(`   Fontes: ${successSources}/${totalSources} OK`);
-    console.log(`   Canais: ${live.length}`);
-    console.log(`   Filmes: ${vod.length}`);
-    console.log(`   Séries: ${Object.keys(series).length}`);
-    console.log(`   Categorias: ${categories.live.length + categories.vod.length + categories.series.length}`);
-}
-
-function parseM3UContent(content, sourceName, filterType = 'all') {
-    const lines = content.split(/\r?\n/);
-    let current = null;
-    let id = Date.now() + Math.random();
-
-    for (let line of lines) {
-        line = line.trim();
-        if (!line) continue;
-
-        if (line.startsWith("#EXTINF")) {
-            const tvgNameMatch = line.match(/tvg-name="([^"]*)"/);
-            let name = tvgNameMatch ? tvgNameMatch[1] : "";
-            
-            if (!name) {
-                const commaIndex = line.lastIndexOf(",");
-                name = commaIndex !== -1 ? line.substring(commaIndex + 1).trim() : "Sem Nome";
-            }
-            
-            const groupMatch = line.match(/group-title="([^"]*)"/i);
-            let group = groupMatch ? groupMatch[1] : "OUTROS";
-            
-            const logoMatch = line.match(/tvg-logo="([^"]*)"/i);
-            let icon = logoMatch ? logoMatch[1] : "";
-
-            current = {
-                id: (id++).toString(),
-                name: name,
-                group: `[${sourceName}] ${group}`,
-                icon: icon,
-                rawLine: line,
-                source: sourceName
-            };
-        }
-        else if (line.startsWith("http") && current) {
-            current.url = line;
-            const groupUpper = current.group.toUpperCase();
-            
-            if (filterType !== 'all') {
-                if (filterType === 'live' && !isLiveContent(groupUpper, current.name)) continue;
-                if (filterType === 'vod' && !isVodContent(groupUpper, current.name)) continue;
-                if (filterType === 'series' && !isSeriesContent(groupUpper, current.name)) continue;
-            }
-            
-            if (isVodContent(groupUpper, current.name)) {
-                parseMovie(current);
-            }
-            else if (isSeriesContent(groupUpper, current.name)) {
-                parseSeries(current);
-            }
-            else {
-                parseLive(current);
-            }
-            current = null;
-        }
-    }
-}
-
-function isLiveContent(groupUpper, name) {
-    return groupUpper.includes('CANAL') || groupUpper.includes('TV') || 
-           groupUpper.includes('LIVE') || !name.match(/S\d+E\d+/i);
-}
-
-function isVodContent(groupUpper, name) {
-    return groupUpper.includes('FILME') || groupUpper.includes('MOVIE') || 
-           groupUpper.includes('VOD');
-}
-
-function isSeriesContent(groupUpper, name) {
-    return groupUpper.includes('SERIE') || groupUpper.includes('SÉRIE') || 
-           name.match(/S\d+E\d+/i);
 }
 
 function getOrCreateCategory(group, type) {
-    const catKey = `${type}_${group}`;
-    if (!groupToId[catKey]) {
+    if (!groupToId[group]) {
         const catId = catIdCounters[type].toString();
-        groupToId[catKey] = catId;
+        groupToId[group] = catId;
         catIdCounters[type]++;
         
         const parts = group.split("|");
@@ -530,7 +235,7 @@ function getOrCreateCategory(group, type) {
         else if (type === "vod") categories.vod.push(catObj);
         else if (type === "series") categories.series.push(catObj);
     }
-    return groupToId[catKey];
+    return groupToId[group];
 }
 
 function parseLive(item) {
@@ -577,6 +282,7 @@ function parseSeries(item) {
     const categoryId = getOrCreateCategory(item.group, "series");
     const match = item.name.match(/S(\d+)E(\d+)/i);
     if (!match) {
+        console.log(`⚠️  Episódio não reconhecido: ${item.name}`);
         return;
     }
     
@@ -606,7 +312,10 @@ function parseSeries(item) {
     }
 
     const exists = series[serieName].seasons[season].some(e => e.episode_num === episode);
-    if (exists) return;
+    if (exists) {
+        console.log(`⚠️  Episódio duplicado ignorado: ${item.name}`);
+        return;
+    }
 
     series[serieName].seasons[season].push({
         id: item.id.toString(),
@@ -624,91 +333,6 @@ function parseSeries(item) {
     });
 }
 
-// ==================== BANCO DE DADOS ====================
-
-function loadDatabase() {
-    try {
-        if (fs.existsSync(DB_FILE)) {
-            const data = fs.readFileSync(DB_FILE, "utf8");
-            db = JSON.parse(data);
-            console.log("💾 Banco de dados carregado");
-            
-            const adminExists = db.users.find(u => u.isAdmin === true);
-            if (!adminExists) {
-                console.log("⚠️ Admin não encontrado, criando novo...");
-                createDefaultAdmin();
-            } else {
-                console.log("✅ Admin encontrado:", adminExists.username);
-            }
-        } else {
-            console.log("⚠️ Banco de dados não existe, criando novo...");
-            createDefaultAdmin();
-        }
-    } catch (error) {
-        console.error("Erro ao carregar banco:", error);
-        createDefaultAdmin();
-    }
-}
-
-function createDefaultAdmin() {
-    db.users = db.users.filter(u => !u.isAdmin);
-    
-    const adminUser = {
-        id: "admin",
-        username: "klord",
-        password: "Kl0rd777",
-        isAdmin: true,
-        createdAt: new Date().toISOString(),
-        expiresAt: "never",
-        maxConnections: 999,
-        activeConnections: 0,
-        status: "Active",
-        notes: "Administrador do sistema"
-    };
-    
-    db.users.push(adminUser);
-    saveDatabase();
-    console.log("✅ Admin criado: klord / Kl0rd777");
-}
-
-function saveDatabase() {
-    try {
-        fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
-    } catch (error) {
-        console.error("Erro ao salvar banco:", error);
-    }
-}
-
-function generateId() {
-    return crypto.randomBytes(8).toString("hex");
-}
-
-function generatePassword(length = 8) {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let password = "";
-    for (let i = 0; i < length; i++) {
-        password += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return password;
-}
-
-function calculateExpiryDate(days) {
-    const date = new Date();
-    date.setDate(date.getDate() + parseInt(days));
-    return date.toISOString().split("T")[0];
-}
-
-function calculateTrialExpiry() {
-    const date = new Date();
-    date.setHours(date.getHours() + 1);
-    return date.toISOString();
-}
-
-function isExpired(user) {
-    if (user.expiresAt === "never") return false;
-    return new Date(user.expiresAt) < new Date();
-}
-
 // ==================== API IPTV (Xtream Codes) ====================
 
 app.get("/player_api.php", (req, res) => {
@@ -724,7 +348,7 @@ app.get("/player_api.php", (req, res) => {
             user_info: { 
                 auth: 0, 
                 status: "Expired",
-                message: user.isTrial ? "Seu teste de 1 hora expirou" : "Sua assinatura expirou"
+                message: "Sua assinatura expirou"
             } 
         });
     }
@@ -737,11 +361,11 @@ app.get("/player_api.php", (req, res) => {
             user_info: {
                 username: user.username,
                 password: user.password,
-                message: user.isTrial ? "⚡ Conta de teste - 1 hora" : "",
+                message: "",
                 auth: 1,
                 status: user.status,
                 exp_date: user.expiresAt === "never" ? "1758143248" : Math.floor(new Date(user.expiresAt).getTime() / 1000).toString(),
-                is_trial: user.isTrial ? "1" : "0",
+                is_trial: "0",
                 active_cons: user.activeConnections.toString(),
                 created_at: Math.floor(new Date(user.createdAt).getTime() / 1000).toString(),
                 max_connections: user.maxConnections.toString(),
@@ -947,6 +571,15 @@ app.get("/admin", (req, res) => {
             margin-top: 15px;
             display: none;
         }
+        .debug-info {
+            margin-top: 20px;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 5px;
+            font-size: 12px;
+            color: #666;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -963,6 +596,7 @@ app.get("/admin", (req, res) => {
             </div>
             <button type="submit" class="btn">Entrar</button>
             <div id="error" class="error">Usuário ou senha incorretos</div>
+            <div id="debug" class="debug-info"></div>
         </form>
     </div>
 
@@ -972,6 +606,8 @@ app.get("/admin", (req, res) => {
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
             
+            console.log('Tentando login com:', username);
+            
             try {
                 const res = await fetch('/admin/api/login', {
                     method: 'POST',
@@ -980,14 +616,20 @@ app.get("/admin", (req, res) => {
                 });
                 
                 const data = await res.json();
+                console.log('Resposta:', data);
                 
                 if (data.success) {
                     localStorage.setItem('adminToken', data.token);
                     window.location.href = '/admin/dashboard';
                 } else {
                     document.getElementById('error').style.display = 'block';
+                    if (data.debug) {
+                        document.getElementById('debug').style.display = 'block';
+                        document.getElementById('debug').textContent = 'Debug: ' + data.debug;
+                    }
                 }
             } catch (err) {
+                console.error('Erro:', err);
                 document.getElementById('error').textContent = 'Erro de conexão';
                 document.getElementById('error').style.display = 'block';
             }
@@ -997,32 +639,52 @@ app.get("/admin", (req, res) => {
 </html>`);
 });
 
-// API de login do painel
+// API de login do painel - COM DEBUG
 app.post("/admin/api/login", (req, res) => {
     const { username, password } = req.body;
+    
+    console.log("Tentativa de login:", username, "Senha recebida:", password);
+    console.log("Usuários no banco:", db.users.map(u => ({ user: u.username, isAdmin: u.isAdmin })));
+    
+    // Buscar usuário
     const user = db.users.find(u => u.username === username && u.password === password);
     
+    console.log("Usuário encontrado:", user ? "SIM" : "NÃO");
+    
+    if (user) {
+        console.log("isAdmin:", user.isAdmin);
+    }
+    
+    // Verificar se é admin
     if (user && user.isAdmin === true) {
         const token = generateId();
         activeTokens.add(token);
+        console.log("Login bem-sucedido, token gerado:", token.substring(0, 8) + "...");
         return res.json({ success: true, token, user: { username: user.username, isAdmin: true } });
     } else {
-        return res.json({ success: false });
+        let debugMsg = "";
+        if (!user) debugMsg = "Usuário/senha não encontrado";
+        else if (!user.isAdmin) debugMsg = "Usuário não é admin";
+        
+        console.log("Login falhou:", debugMsg);
+        return res.json({ success: false, debug: debugMsg });
     }
 });
 
 // Middleware para verificar token válido
 function verifyToken(req, res, next) {
     const token = req.headers.authorization;
+    console.log("Verificando token:", token ? token.substring(0, 8) + "..." : "nenhum");
+    
     if (!token || !activeTokens.has(token)) {
+        console.log("Token inválido ou não encontrado");
         return res.status(401).json({ error: "Não autorizado" });
     }
     next();
 }
 
-// Dashboard do painel (HTML completo)
+// Dashboard do painel
 app.get("/admin/dashboard", (req, res) => {
-    // Retorna o HTML do dashboard (mantido igual ao original, mas com funções de sync)
     res.send(`<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -1032,16 +694,16 @@ app.get("/admin/dashboard", (req, res) => {
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f6fa; }
-        .sidebar { position: fixed; left: 0; top: 0; width: 250px; height: 100vh; background: #1e3c72; color: white; padding: 20px; overflow-y: auto; }
+        .sidebar { position: fixed; left: 0; top: 0; width: 250px; height: 100vh; background: #1e3c72; color: white; padding: 20px; }
         .sidebar h2 { margin-bottom: 30px; text-align: center; border-bottom: 2px solid rgba(255,255,255,0.2); padding-bottom: 20px; }
         .nav-item { padding: 15px; margin: 5px 0; cursor: pointer; border-radius: 5px; transition: background 0.3s; display: flex; align-items: center; gap: 10px; }
         .nav-item:hover, .nav-item.active { background: rgba(255,255,255,0.1); }
         .main-content { margin-left: 250px; padding: 30px; }
         .header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
         .stat-card { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         .stat-card h3 { color: #666; font-size: 14px; margin-bottom: 10px; text-transform: uppercase; }
-        .stat-card .number { font-size: 32px; font-weight: bold; color: #1e3c72; }
+        .stat-card .number { font-size: 36px; font-weight: bold; color: #1e3c72; }
         .section { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
         .section h2 { margin-bottom: 20px; color: #1e3c72; display: flex; justify-content: space-between; align-items: center; }
         .btn-primary { background: #1e3c72; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 14px; }
@@ -1049,14 +711,12 @@ app.get("/admin/dashboard", (req, res) => {
         .btn-danger { background: #e74c3c; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-size: 12px; }
         .btn-success { background: #27ae60; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-size: 12px; }
         .btn-warning { background: #f39c12; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-size: 12px; }
-        .btn-info { background: #3498db; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-size: 12px; }
         table { width: 100%; border-collapse: collapse; }
         th, td { text-align: left; padding: 12px; border-bottom: 1px solid #eee; }
         th { background: #f8f9fa; font-weight: 600; color: #555; }
         tr:hover { background: #f8f9fa; }
         .status-active { color: #27ae60; font-weight: bold; }
         .status-expired { color: #e74c3c; font-weight: bold; }
-        .status-trial { color: #f39c12; font-weight: bold; }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000; }
         .modal-content { background: white; padding: 30px; border-radius: 10px; width: 90%; max-width: 500px; max-height: 90vh; overflow-y: auto; }
         .form-group { margin-bottom: 15px; }
@@ -1069,19 +729,7 @@ app.get("/admin/dashboard", (req, res) => {
         .badge { padding: 4px 8px; border-radius: 3px; font-size: 12px; font-weight: bold; }
         .badge-admin { background: #9b59b6; color: white; }
         .badge-user { background: #3498db; color: white; }
-        .badge-trial { background: #f39c12; color: white; }
         .copy-link { cursor: pointer; color: #1e3c72; text-decoration: underline; }
-        .source-card { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #1e3c72; }
-        .source-card.error { border-left-color: #e74c3c; }
-        .source-card.success { border-left-color: #27ae60; }
-        .source-status { display: inline-block; padding: 4px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; }
-        .source-status.active { background: #27ae60; color: white; }
-        .source-status.error { background: #e74c3c; color: white; }
-        .trial-badge { background: linear-gradient(45deg, #f39c12, #e74c3c); color: white; padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }
-        .sync-status { position: fixed; bottom: 20px; right: 20px; padding: 15px 25px; border-radius: 8px; color: white; font-weight: bold; display: none; z-index: 2000; }
-        .sync-status.success { background: #27ae60; }
-        .sync-status.error { background: #e74c3c; }
-        .sync-status.loading { background: #3498db; }
     </style>
 </head>
 <body>
@@ -1089,7 +737,6 @@ app.get("/admin/dashboard", (req, res) => {
         <h2>📺 IPTV Manager</h2>
         <div class="nav-item active" onclick="showSection('dashboard')"><span>📊</span> Dashboard</div>
         <div class="nav-item" onclick="showSection('users')"><span>👥</span> Usuários</div>
-        <div class="nav-item" onclick="showSection('sources')"><span>🔗</span> Fontes M3U</div>
         <div class="nav-item" onclick="showSection('content')"><span>🎬</span> Conteúdo</div>
         <div class="nav-item" onclick="showSection('settings')"><span>⚙️</span> Configurações</div>
         <div class="nav-item" onclick="logout()"><span>🚪</span> Sair</div>
@@ -1099,38 +746,25 @@ app.get("/admin/dashboard", (req, res) => {
         <div id="dashboard-section">
             <div class="header">
                 <h1>Dashboard</h1>
-                <div>
-                    <button class="btn-success" onclick="syncNow()">🔄 Sincronizar Agora</button>
-                    <span id="currentUser"></span> | <span id="currentDate"></span>
-                </div>
+                <div><span id="currentUser"></span> | <span id="currentDate"></span></div>
             </div>
             <div class="stats">
                 <div class="stat-card"><h3>Total de Usuários</h3><div class="number" id="totalUsers">0</div></div>
                 <div class="stat-card"><h3>Usuários Ativos</h3><div class="number" id="activeUsers">0</div></div>
-                <div class="stat-card"><h3>Testes Ativos</h3><div class="number" id="trialUsers">0</div></div>
                 <div class="stat-card"><h3>Expirados</h3><div class="number" id="expiredUsers">0</div></div>
                 <div class="stat-card"><h3>Canais / Filmes / Séries</h3><div class="number" id="totalContent">0 / 0 / 0</div></div>
-                <div class="stat-card"><h3>Fontes M3U</h3><div class="number" id="totalSources">0</div></div>
             </div>
             <div class="section">
                 <h2>📈 Atividade Recente</h2>
                 <p>Últimos usuários criados:</p>
-                <table id="recentUsers"><thead><tr><th>Usuário</th><th>Tipo</th><th>Criado em</th><th>Expira em</th><th>Status</th></tr></thead><tbody></tbody></table>
-            </div>
-            <div class="section">
-                <h2>☁️ Status da Sincronização</h2>
-                <p id="syncStatus">Última sincronização: <span id="lastSync">Nunca</span></p>
-                <p style="color: #666; font-size: 14px;">O sistema sincroniza automaticamente com GitHub e aciona deploy no Render a cada alteração.</p>
+                <table id="recentUsers"><thead><tr><th>Usuário</th><th>Criado em</th><th>Expira em</th><th>Status</th></tr></thead><tbody></tbody></table>
             </div>
         </div>
 
         <div id="users-section" class="hidden">
             <div class="header">
                 <h1>Gerenciar Usuários</h1>
-                <div>
-                    <button class="btn-warning" onclick="openModal('createTrial')">⚡ Criar Teste (1h)</button>
-                    <button class="btn-primary" onclick="openModal('createUser')">+ Novo Usuário</button>
-                </div>
+                <button class="btn-primary" onclick="openModal('createUser')">+ Novo Usuário</button>
             </div>
             <div class="section">
                 <input type="text" class="search-box" id="searchUsers" placeholder="🔍 Buscar usuários..." onkeyup="searchUsers()">
@@ -1138,24 +772,8 @@ app.get("/admin/dashboard", (req, res) => {
             </div>
         </div>
 
-        <div id="sources-section" class="hidden">
-            <div class="header">
-                <h1>Fontes M3U</h1>
-                <button class="btn-primary" onclick="openModal('addSource')">+ Adicionar Fonte</button>
-            </div>
-            <div class="section">
-                <h2>🔗 Fontes Configuradas</h2>
-                <div id="sourcesList"></div>
-            </div>
-            <div class="section">
-                <h2>🔄 Ações</h2>
-                <button class="btn-success" onclick="reloadAllSources()">🔄 Recarregar Todas as Fontes</button>
-                <p style="margin-top: 10px; color: #666;">Isso irá baixar e processar todas as URLs M3U configuradas.</p>
-            </div>
-        </div>
-
         <div id="content-section" class="hidden">
-            <div class="header"><h1>Conteúdo do Servidor</h1><button class="btn-primary" onclick="reloadAllSources()">🔄 Recarregar M3U</button></div>
+            <div class="header"><h1>Conteúdo do Servidor</h1><button class="btn-primary" onclick="location.reload()">🔄 Recarregar M3U</button></div>
             <div class="section"><h2>📺 Canais (${live.length})</h2><p>${categories.live.length} categorias</p></div>
             <div class="section"><h2>🎬 Filmes (${vod.length})</h2><p>${categories.vod.length} categorias</p></div>
             <div class="section"><h2>📺 Séries (${Object.keys(series).length})</h2><p>${categories.series.length} categorias</p></div>
@@ -1169,11 +787,6 @@ app.get("/admin/dashboard", (req, res) => {
                 <div class="form-group"><label>Dias padrão de expiração</label><input type="number" id="defaultExpiry" value="${db.settings.defaultExpiryDays}"></div>
                 <div class="form-group"><label>Conexões simultâneas padrão</label><input type="number" id="defaultConnections" value="${db.settings.defaultMaxConnections}"></div>
                 <button class="btn-primary" onclick="saveSettings()">Salvar Configurações</button>
-            </div>
-            <div class="section">
-                <h2>🚀 Deploy</h2>
-                <p>URL de Deploy do Render configurada.</p>
-                <button class="btn-success" onclick="triggerDeploy()">🚀 Acionar Deploy Manual</button>
             </div>
         </div>
     </div>
@@ -1190,45 +803,6 @@ app.get("/admin/dashboard", (req, res) => {
                 <div class="form-actions">
                     <button type="button" class="btn-primary" onclick="closeModal('createUser')">Cancelar</button>
                     <button type="submit" class="btn-success">Criar Usuário</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <div id="createTrialModal" class="modal">
-        <div class="modal-content">
-            <h2>⚡ Criar Conta de Teste (1 Hora)</h2>
-            <form id="createTrialForm">
-                <div class="form-group"><label>Usuário (deixe em branco para gerar automático)</label><input type="text" id="trialUsername" placeholder="trial123"></div>
-                <div class="form-group"><label>Senha (deixe em branco para gerar automático)</label><input type="text" id="trialPassword" placeholder="senha123"></div>
-                <div class="form-group"><label>Máximo de conexões</label><input type="number" id="trialMaxConn" value="1" min="1"></div>
-                <div class="form-group"><label>Notas (opcional)</label><input type="text" id="trialNotes" placeholder="Teste cliente XYZ"></div>
-                <p style="color: #f39c12; font-size: 14px; margin-bottom: 15px;">⚠️ Esta conta expirará automaticamente em 1 hora!</p>
-                <div class="form-actions">
-                    <button type="button" class="btn-primary" onclick="closeModal('createTrial')">Cancelar</button>
-                    <button type="submit" class="btn-warning">⚡ Criar Teste</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <div id="addSourceModal" class="modal">
-        <div class="modal-content">
-            <h2>Adicionar Fonte M3U</h2>
-            <form id="addSourceForm">
-                <div class="form-group"><label>Nome da Fonte</label><input type="text" id="sourceName" placeholder="Minha Lista IPTV" required></div>
-                <div class="form-group"><label>URL da Lista M3U</label><input type="url" id="sourceUrl" placeholder="http://exemplo.com/lista.m3u" required></div>
-                <div class="form-group"><label>Tipo de Conteúdo</label>
-                    <select id="sourceType">
-                        <option value="all">Todos (Canais + VOD + Séries)</option>
-                        <option value="live">Apenas Canais Ao Vivo</option>
-                        <option value="vod">Apenas Filmes (VOD)</option>
-                        <option value="series">Apenas Séries</option>
-                    </select>
-                </div>
-                <div class="form-actions">
-                    <button type="button" class="btn-primary" onclick="closeModal('addSource')">Cancelar</button>
-                    <button type="submit" class="btn-success">Adicionar Fonte</button>
                 </div>
             </form>
         </div>
@@ -1253,8 +827,6 @@ app.get("/admin/dashboard", (req, res) => {
         </div>
     </div>
 
-    <div id="syncStatusDiv" class="sync-status"></div>
-
     <script>
         let users = [];
         let currentSection = 'dashboard';
@@ -1266,27 +838,15 @@ app.get("/admin/dashboard", (req, res) => {
         document.addEventListener('DOMContentLoaded', () => {
             loadDashboard();
             loadUsers();
-            loadSources();
             document.getElementById('createUserForm').addEventListener('submit', handleCreateUser);
-            document.getElementById('createTrialForm').addEventListener('submit', handleCreateTrial);
-            document.getElementById('addSourceForm').addEventListener('submit', handleAddSource);
             document.getElementById('editUserForm').addEventListener('submit', handleEditUser);
         });
-
-        function showSyncStatus(message, type) {
-            const div = document.getElementById('syncStatusDiv');
-            div.textContent = message;
-            div.className = 'sync-status ' + type;
-            div.style.display = 'block';
-            setTimeout(() => { div.style.display = 'none'; }, 5000);
-        }
 
         function showSection(section) {
             document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
             event.target.closest('.nav-item').classList.add('active');
             document.getElementById('dashboard-section').classList.add('hidden');
             document.getElementById('users-section').classList.add('hidden');
-            document.getElementById('sources-section').classList.add('hidden');
             document.getElementById('content-section').classList.add('hidden');
             document.getElementById('settings-section').classList.add('hidden');
             document.getElementById(section + '-section').classList.remove('hidden');
@@ -1299,12 +859,10 @@ app.get("/admin/dashboard", (req, res) => {
             const data = await res.json();
             document.getElementById('totalUsers').textContent = data.totalUsers;
             document.getElementById('activeUsers').textContent = data.activeUsers;
-            document.getElementById('trialUsers').textContent = data.trialUsers;
             document.getElementById('expiredUsers').textContent = data.expiredUsers;
             document.getElementById('totalContent').textContent = data.content.live + ' / ' + data.content.vod + ' / ' + data.content.series;
-            document.getElementById('totalSources').textContent = data.totalSources;
             const tbody = document.querySelector('#recentUsers tbody');
-            tbody.innerHTML = data.recentUsers.map(u => \`<tr><td><strong>\${u.username}</strong> \${u.isTrial ? '<span class="trial-badge">TESTE</span>' : ''}</td><td>\${u.isTrial ? 'Teste' : (u.isAdmin ? 'Admin' : 'User')}</td><td>\${new Date(u.createdAt).toLocaleDateString('pt-BR')}</td><td>\${u.expiresAt === 'never' ? 'Nunca' : new Date(u.expiresAt).toLocaleDateString('pt-BR')}</td><td class="\${u.status === 'Active' ? 'status-active' : 'status-expired'}">\${u.status}</td></tr>\`).join('');
+            tbody.innerHTML = data.recentUsers.map(u => \`<tr><td>\${u.username}</td><td>\${new Date(u.createdAt).toLocaleDateString('pt-BR')}</td><td>\${u.expiresAt === 'never' ? 'Nunca' : new Date(u.expiresAt).toLocaleDateString('pt-BR')}</td><td class="\${u.status === 'Active' ? 'status-active' : 'status-expired'}">\${u.status}</td></tr>\`).join('');
             document.getElementById('currentDate').textContent = new Date().toLocaleDateString('pt-BR');
             document.getElementById('currentUser').textContent = 'Admin';
         }
@@ -1316,46 +874,13 @@ app.get("/admin/dashboard", (req, res) => {
             renderUsers(users);
         }
 
-        async function loadSources() {
-            const res = await fetch('/admin/api/sources', { headers: { 'Authorization': localStorage.getItem('adminToken') }});
-            if (res.status === 401) { logout(); return; }
-            const sources = await res.json();
-            const container = document.getElementById('sourcesList');
-            if (sources.length === 0) {
-                container.innerHTML = '<p style="color: #666;">Nenhuma fonte M3U configurada. Adicione uma fonte para começar.</p>';
-                return;
-            }
-            container.innerHTML = sources.map(s => {
-                const statusClass = s.status === 'active' ? 'success' : 'error';
-                const statusText = s.status === 'active' ? 'Ativo' : 'Erro';
-                return \`<div class="source-card \${statusClass}">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <strong>\${s.name}</strong>
-                        <span class="source-status \${s.status}">\${statusText}</span>
-                    </div>
-                    <div style="font-size: 12px; color: #666; margin-bottom: 10px;">
-                        URL: \${s.url.substring(0, 50)}...<br>
-                        Tipo: \${s.type} | Última atualização: \${s.lastUpdate ? new Date(s.lastUpdate).toLocaleString('pt-BR') : 'Nunca'}
-                        \${s.lastError ? '<br><span style="color: #e74c3c;">Erro: ' + s.lastError + '</span>' : ''}
-                    </div>
-                    <div>
-                        <button class="btn-danger" onclick="deleteSource('\${s.id}')">🗑️ Remover</button>
-                    </div>
-                </div>\`;
-            }).join('');
-        }
-
         function renderUsers(userList) {
             const tbody = document.querySelector('#usersTable tbody');
             tbody.innerHTML = userList.map(u => {
                 const isExpired = new Date(u.expiresAt) < new Date() && u.expiresAt !== 'never';
-                let statusClass = isExpired ? 'status-expired' : (u.status === 'Active' ? 'status-active' : 'status-expired');
-                let statusText = isExpired ? 'EXPIRADO' : u.status;
-                if (u.isTrial && !isExpired) {
-                    statusClass = 'status-trial';
-                    statusText = 'TESTE';
-                }
-                return \`<tr><td><strong>\${u.username}</strong> \${u.isTrial ? '<span class="trial-badge">TESTE</span>' : ''}</td><td><span class="copy-link" onclick="copyToClipboard('\${u.password}')" title="Copiar senha">\${u.password.substring(0, 8)}...</span></td><td><span class="badge \${u.isAdmin ? 'badge-admin' : (u.isTrial ? 'badge-trial' : 'badge-user')}">\${u.isAdmin ? 'Admin' : (u.isTrial ? 'Teste' : 'User')}</span></td><td>\${new Date(u.createdAt).toLocaleDateString('pt-BR')}</td><td>\${u.expiresAt === 'never' ? 'Nunca' : new Date(u.expiresAt).toLocaleDateString('pt-BR')}</td><td>\${u.activeConnections} / \${u.maxConnections}</td><td class="\${statusClass}">\${statusText}</td><td><button class="btn-success" onclick="copyLink('\${u.username}', '\${u.password}')">🔗 Link</button><button class="btn-warning" onclick="editUser('\${u.id}')">✏️</button><button class="btn-danger" onclick="deleteUser('\${u.id}')" \${u.isAdmin ? 'disabled' : ''}>🗑️</button></td></tr>\`;
+                const statusClass = isExpired ? 'status-expired' : (u.status === 'Active' ? 'status-active' : 'status-expired');
+                const statusText = isExpired ? 'EXPIRADO' : u.status;
+                return \`<tr><td><strong>\${u.username}</strong></td><td><span class="copy-link" onclick="copyToClipboard('\${u.password}')" title="Copiar senha">\${u.password.substring(0, 8)}...</span></td><td><span class="badge \${u.isAdmin ? 'badge-admin' : 'badge-user'}">\${u.isAdmin ? 'Admin' : 'User'}</span></td><td>\${new Date(u.createdAt).toLocaleDateString('pt-BR')}</td><td>\${u.expiresAt === 'never' ? 'Nunca' : new Date(u.expiresAt).toLocaleDateString('pt-BR')}</td><td>\${u.activeConnections} / \${u.maxConnections}</td><td class="\${statusClass}">\${statusText}</td><td><button class="btn-success" onclick="copyLink('\${u.username}', '\${u.password}')">🔗 Link</button><button class="btn-warning" onclick="editUser('\${u.id}')">✏️</button><button class="btn-danger" onclick="deleteUser('\${u.id}')" \${u.isAdmin ? 'disabled' : ''}>🗑️</button></td></tr>\`;
             }).join('');
         }
 
@@ -1369,7 +894,6 @@ app.get("/admin/dashboard", (req, res) => {
 
         async function handleCreateUser(e) {
             e.preventDefault();
-            showSyncStatus('⏳ Criando usuário e sincronizando com GitHub...', 'loading');
             const data = {
                 username: document.getElementById('newUsername').value,
                 password: document.getElementById('newPassword').value,
@@ -1385,150 +909,14 @@ app.get("/admin/dashboard", (req, res) => {
             if (res.status === 401) { logout(); return; }
             const result = await res.json();
             if (result.success) {
-                showSyncStatus('✅ Usuário criado e sincronizado!', 'success');
                 alert(\`Usuário criado!\\nUsuário: \${result.user.username}\\nSenha: \${result.user.password}\`);
                 closeModal('createUser');
                 loadUsers();
                 loadDashboard();
                 document.getElementById('createUserForm').reset();
-                updateLastSync();
             } else {
-                showSyncStatus('❌ Erro: ' + result.error, 'error');
                 alert('Erro: ' + result.error);
             }
-        }
-
-        async function handleCreateTrial(e) {
-            e.preventDefault();
-            showSyncStatus('⏳ Criando teste e sincronizando...', 'loading');
-            const data = {
-                username: document.getElementById('trialUsername').value,
-                password: document.getElementById('trialPassword').value,
-                maxConnections: parseInt(document.getElementById('trialMaxConn').value),
-                notes: document.getElementById('trialNotes').value
-            };
-            const res = await fetch('/admin/api/users/trial', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': localStorage.getItem('adminToken') },
-                body: JSON.stringify(data)
-            });
-            if (res.status === 401) { logout(); return; }
-            const result = await res.json();
-            if (result.success) {
-                showSyncStatus('✅ Teste criado e sincronizado!', 'success');
-                alert(\`⚡ Conta de teste criada!\\nUsuário: \${result.user.username}\\nSenha: \${result.user.password}\\n\\n⏰ Expira em: 1 hora\`);
-                closeModal('createTrial');
-                loadUsers();
-                loadDashboard();
-                document.getElementById('createTrialForm').reset();
-                updateLastSync();
-            } else {
-                showSyncStatus('❌ Erro: ' + result.error, 'error');
-                alert('Erro: ' + result.error);
-            }
-        }
-
-        async function handleAddSource(e) {
-            e.preventDefault();
-            showSyncStatus('⏳ Adicionando fonte...', 'loading');
-            const data = {
-                name: document.getElementById('sourceName').value,
-                url: document.getElementById('sourceUrl').value,
-                type: document.getElementById('sourceType').value
-            };
-            const res = await fetch('/admin/api/sources', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': localStorage.getItem('adminToken') },
-                body: JSON.stringify(data)
-            });
-            if (res.status === 401) { logout(); return; }
-            const result = await res.json();
-            if (result.success) {
-                showSyncStatus('✅ Fonte adicionada!', 'success');
-                alert('✅ Fonte M3U adicionada com sucesso!');
-                closeModal('addSource');
-                loadSources();
-                loadDashboard();
-                document.getElementById('addSourceForm').reset();
-                reloadAllSources();
-            } else {
-                showSyncStatus('❌ Erro: ' + result.error, 'error');
-                alert('❌ Erro: ' + result.error);
-            }
-        }
-
-        async function deleteSource(id) {
-            if (!confirm('Tem certeza que deseja remover esta fonte M3U?')) return;
-            showSyncStatus('⏳ Removendo fonte...', 'loading');
-            const res = await fetch('/admin/api/sources/' + id, {
-                method: 'DELETE',
-                headers: { 'Authorization': localStorage.getItem('adminToken') }
-            });
-            if (res.status === 401) { logout(); return; }
-            const result = await res.json();
-            if (result.success) {
-                showSyncStatus('✅ Fonte removida!', 'success');
-                loadSources();
-                loadDashboard();
-                reloadAllSources();
-            }
-        }
-
-        async function reloadAllSources() {
-            showSyncStatus('⏳ Recarregando M3U...', 'loading');
-            const res = await fetch('/admin/api/reload-m3u', {
-                method: 'POST',
-                headers: { 'Authorization': localStorage.getItem('adminToken') }
-            });
-            if (res.status === 401) { logout(); return; }
-            const result = await res.json();
-            if (result.success) {
-                showSyncStatus('✅ M3U recarregado!', 'success');
-                alert(\`✅ M3U recarregado!\\nCanais: \${result.stats.live}\\nFilmes: \${result.stats.vod}\\nSéries: \${result.stats.series}\`);
-                loadDashboard();
-            } else {
-                showSyncStatus('❌ Erro ao recarregar', 'error');
-                alert('❌ Erro ao recarregar: ' + result.error);
-            }
-        }
-
-        async function triggerDeploy() {
-            showSyncStatus('⏳ Acionando deploy...', 'loading');
-            const res = await fetch('/admin/api/deploy', {
-                method: 'POST',
-                headers: { 'Authorization': localStorage.getItem('adminToken') }
-            });
-            if (res.status === 401) { logout(); return; }
-            const result = await res.json();
-            if (result.success) {
-                showSyncStatus('🚀 Deploy acionado!', 'success');
-                alert('🚀 Deploy acionado com sucesso no Render!');
-            } else {
-                showSyncStatus('⚠️ Erro no deploy', 'error');
-                alert('⚠️ Erro no deploy: ' + result.error);
-            }
-        }
-
-        async function syncNow() {
-            showSyncStatus('⏳ Sincronizando com GitHub...', 'loading');
-            const res = await fetch('/admin/api/sync', {
-                method: 'POST',
-                headers: { 'Authorization': localStorage.getItem('adminToken') }
-            });
-            if (res.status === 401) { logout(); return; }
-            const result = await res.json();
-            if (result.success) {
-                showSyncStatus('✅ Sincronizado!', 'success');
-                alert('✅ Sincronização concluída!\\nCommit: ' + result.github.commitSha.substring(0, 7));
-                updateLastSync();
-            } else {
-                showSyncStatus('❌ Erro: ' + result.error, 'error');
-                alert('❌ Erro na sincronização: ' + result.error);
-            }
-        }
-
-        function updateLastSync() {
-            document.getElementById('lastSync').textContent = new Date().toLocaleString('pt-BR');
         }
 
         async function editUser(id) {
@@ -1546,7 +934,6 @@ app.get("/admin/dashboard", (req, res) => {
 
         async function handleEditUser(e) {
             e.preventDefault();
-            showSyncStatus('⏳ Salvando alterações...', 'loading');
             const id = document.getElementById('editUserId').value;
             const data = {
                 password: document.getElementById('editPassword').value,
@@ -1563,20 +950,16 @@ app.get("/admin/dashboard", (req, res) => {
             if (res.status === 401) { logout(); return; }
             const result = await res.json();
             if (result.success) {
-                showSyncStatus('✅ Alterações salvas!', 'success');
                 closeModal('editUser');
                 loadUsers();
                 loadDashboard();
-                updateLastSync();
             } else {
-                showSyncStatus('❌ Erro: ' + result.error, 'error');
                 alert('Erro: ' + result.error);
             }
         }
 
         async function deleteUser(id) {
             if (!confirm('Tem certeza que deseja excluir este usuário?')) return;
-            showSyncStatus('⏳ Excluindo usuário...', 'loading');
             const res = await fetch('/admin/api/users/' + id, {
                 method: 'DELETE',
                 headers: { 'Authorization': localStorage.getItem('adminToken') }
@@ -1584,10 +967,8 @@ app.get("/admin/dashboard", (req, res) => {
             if (res.status === 401) { logout(); return; }
             const result = await res.json();
             if (result.success) {
-                showSyncStatus('✅ Usuário excluído!', 'success');
                 loadUsers();
                 loadDashboard();
-                updateLastSync();
             }
         }
 
@@ -1600,7 +981,6 @@ app.get("/admin/dashboard", (req, res) => {
         function copyToClipboard(text) { navigator.clipboard.writeText(text); }
 
         async function saveSettings() {
-            showSyncStatus('⏳ Salvando configurações...', 'loading');
             const data = {
                 serverName: document.getElementById('serverName').value,
                 defaultExpiryDays: parseInt(document.getElementById('defaultExpiry').value),
@@ -1613,11 +993,7 @@ app.get("/admin/dashboard", (req, res) => {
             });
             if (res.status === 401) { logout(); return; }
             const result = await res.json();
-            if (result.success) {
-                showSyncStatus('✅ Configurações salvas!', 'success');
-                alert('Configurações salvas!');
-                updateLastSync();
-            }
+            if (result.success) alert('Configurações salvas!');
         }
 
         function logout() {
@@ -1635,94 +1011,29 @@ app.get("/admin/dashboard", (req, res) => {
 </html>`);
 });
 
-// ==================== APIs ADMINISTRATIVAS ====================
-
-// Estatísticas
+// API Admin - Estatísticas
 app.get("/admin/api/stats", verifyToken, (req, res) => {
     const totalUsers = db.users.length;
-    const activeUsers = db.users.filter(u => !isExpired(u) && u.status === "Active" && !u.isTrial).length;
-    const trialUsers = db.users.filter(u => u.isTrial && !isExpired(u)).length;
+    const activeUsers = db.users.filter(u => !isExpired(u) && u.status === "Active").length;
     const expiredUsers = db.users.filter(u => isExpired(u)).length;
     const recentUsers = [...db.users].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 5);
 
     res.json({
         totalUsers,
         activeUsers,
-        trialUsers,
         expiredUsers,
-        totalSources: m3uSources.length,
         content: { live: live.length, vod: vod.length, series: Object.keys(series).length },
         recentUsers
     });
 });
 
-// Listar fontes M3U
-app.get("/admin/api/sources", verifyToken, (req, res) => {
-    res.json(m3uSources);
-});
-
-// Adicionar fonte M3U
-app.post("/admin/api/sources", verifyToken, async (req, res) => {
-    const { name, url, type } = req.body;
-    const result = await addM3USource(name, url, type || 'all');
-    
-    if (result.success) {
-        await parseAllM3USources();
-        // Sincroniza com GitHub e aciona deploy
-        const syncResult = await syncToGitHubAndDeploy(`Adicionada fonte M3U: ${name}`);
-        return res.json({ ...result, sync: syncResult });
-    }
-    
-    res.json(result);
-});
-
-// Deletar fonte M3U
-app.delete("/admin/api/sources/:id", verifyToken, async (req, res) => {
-    const { id } = req.params;
-    const source = m3uSources.find(s => s.id === id);
-    const success = removeM3USource(id);
-    
-    if (success) {
-        await parseAllM3USources();
-        const syncResult = await syncToGitHubAndDeploy(`Removida fonte M3U: ${source?.name || id}`);
-        return res.json({ success, sync: syncResult });
-    }
-    
-    res.json({ success });
-});
-
-// Recarregar M3U
-app.post("/admin/api/reload-m3u", verifyToken, async (req, res) => {
-    try {
-        await parseAllM3USources();
-        res.json({ 
-            success: true, 
-            stats: { live: live.length, vod: vod.length, series: Object.keys(series).length }
-        });
-    } catch (error) {
-        res.json({ success: false, error: error.message });
-    }
-});
-
-// Trigger deploy manual
-app.post("/admin/api/deploy", verifyToken, async (req, res) => {
-    const result = await triggerRenderDeploy();
-    res.json(result);
-});
-
-// Sincronização manual com GitHub
-app.post("/admin/api/sync", verifyToken, async (req, res) => {
-    const result = await syncToGitHubAndDeploy("Sincronização manual via painel");
-    res.json(result);
-});
-
-// Listar usuários
+// API Admin - Listar usuários
 app.get("/admin/api/users", verifyToken, (req, res) => {
     res.json(db.users.map(u => ({ ...u, isExpired: isExpired(u) })));
 });
 
-// Criar usuário - AGORA COM SINCRONIZAÇÃO GITHUB
-app.post("/admin/api/users", verifyToken, async (req, res) => {
+// API Admin - Criar usuário
+app.post("/admin/api/users", verifyToken, (req, res) => {
     const { username, password, expiryDays, maxConnections, notes } = req.body;
     const finalUsername = username || "user" + Math.floor(Math.random() * 10000);
     const finalPassword = password || generatePassword();
@@ -1736,7 +1047,6 @@ app.post("/admin/api/users", verifyToken, async (req, res) => {
         username: finalUsername,
         password: finalPassword,
         isAdmin: false,
-        isTrial: false,
         createdAt: new Date().toISOString(),
         expiresAt: expiryDays ? calculateExpiryDate(expiryDays) : "never",
         maxConnections: maxConnections || db.settings.defaultMaxConnections,
@@ -1746,152 +1056,66 @@ app.post("/admin/api/users", verifyToken, async (req, res) => {
     };
 
     db.users.push(newUser);
-    
-    // SINCRONIZA COM GITHUB E ACIONA DEPLOY
-    const syncResult = await syncToGitHubAndDeploy(`Criado usuário: ${finalUsername}`);
-    
-    res.json({ 
-        success: true, 
-        user: newUser,
-        sync: syncResult
-    });
+    saveDatabase();
+    res.json({ success: true, user: newUser });
 });
 
-// Criar conta de teste (1 hora) - AGORA COM SINCRONIZAÇÃO GITHUB
-app.post("/admin/api/users/trial", verifyToken, async (req, res) => {
-    const { username, password, maxConnections, notes } = req.body;
-    const finalUsername = username || "trial" + Math.floor(Math.random() * 10000);
-    const finalPassword = password || generatePassword(6);
-    
-    if (db.users.find(u => u.username === finalUsername)) {
-        return res.json({ success: false, error: "Usuário já existe" });
-    }
-
-    const trialUser = {
-        id: generateId(),
-        username: finalUsername,
-        password: finalPassword,
-        isAdmin: false,
-        isTrial: true,
-        createdAt: new Date().toISOString(),
-        expiresAt: calculateTrialExpiry(),
-        maxConnections: maxConnections || 1,
-        activeConnections: 0,
-        status: "Active",
-        notes: notes || "Conta de teste 1 hora"
-    };
-
-    db.users.push(trialUser);
-    
-    // SINCRONIZA COM GITHUB E ACIONA DEPLOY
-    const syncResult = await syncToGitHubAndDeploy(`Criado teste: ${finalUsername}`);
-    
-    res.json({ 
-        success: true, 
-        user: trialUser,
-        sync: syncResult
-    });
-});
-
-// Editar usuário - AGORA COM SINCRONIZAÇÃO GITHUB
-app.put("/admin/api/users/:id", verifyToken, async (req, res) => {
+// API Admin - Editar usuário
+app.put("/admin/api/users/:id", verifyToken, (req, res) => {
     const { id } = req.params;
     const userIndex = db.users.findIndex(u => u.id === id);
     if (userIndex === -1) return res.json({ success: false, error: "Usuário não encontrado" });
 
     const { password, expiresAt, maxConnections, status, notes } = req.body;
-    const oldUsername = db.users[userIndex].username;
-    
     if (password) db.users[userIndex].password = password;
     if (expiresAt) db.users[userIndex].expiresAt = expiresAt;
     if (maxConnections) db.users[userIndex].maxConnections = maxConnections;
     if (status) db.users[userIndex].status = status;
     if (notes !== undefined) db.users[userIndex].notes = notes;
 
-    // SINCRONIZA COM GITHUB E ACIONA DEPLOY
-    const syncResult = await syncToGitHubAndDeploy(`Editado usuário: ${oldUsername}`);
-    
-    res.json({ 
-        success: true, 
-        user: db.users[userIndex],
-        sync: syncResult
-    });
+    saveDatabase();
+    res.json({ success: true, user: db.users[userIndex] });
 });
 
-// Deletar usuário - AGORA COM SINCRONIZAÇÃO GITHUB
-app.delete("/admin/api/users/:id", verifyToken, async (req, res) => {
+// API Admin - Deletar usuário
+app.delete("/admin/api/users/:id", verifyToken, (req, res) => {
     const { id } = req.params;
     const userIndex = db.users.findIndex(u => u.id === id);
     if (userIndex === -1) return res.json({ success: false, error: "Usuário não encontrado" });
     if (db.users[userIndex].isAdmin) return res.json({ success: false, error: "Não pode deletar admin" });
 
-    const username = db.users[userIndex].username;
     db.users.splice(userIndex, 1);
-    
-    // SINCRONIZA COM GITHUB E ACIONA DEPLOY
-    const syncResult = await syncToGitHubAndDeploy(`Removido usuário: ${username}`);
-    
-    res.json({ 
-        success: true,
-        sync: syncResult
-    });
+    saveDatabase();
+    res.json({ success: true });
 });
 
-// Configurações - AGORA COM SINCRONIZAÇÃO GITHUB
-app.put("/admin/api/settings", verifyToken, async (req, res) => {
+// API Admin - Configurações
+app.put("/admin/api/settings", verifyToken, (req, res) => {
     const { serverName, defaultExpiryDays, defaultMaxConnections } = req.body;
     db.settings.serverName = serverName || db.settings.serverName;
     db.settings.defaultExpiryDays = defaultExpiryDays || db.settings.defaultExpiryDays;
     db.settings.defaultMaxConnections = defaultMaxConnections || db.settings.defaultMaxConnections;
-    
-    // SINCRONIZA COM GITHUB E ACIONA DEPLOY
-    const syncResult = await syncToGitHubAndDeploy("Atualizadas configurações do servidor");
-    
-    res.json({ 
-        success: true, 
-        settings: db.settings,
-        sync: syncResult
-    });
+    saveDatabase();
+    res.json({ success: true, settings: db.settings });
 });
 
-// ==================== INICIALIZAÇÃO ====================
+// Inicializar
+loadDatabase();
+parseM3U();
 
-async function initialize() {
-    loadDatabase();
-    loadM3USources();
-    await parseAllM3USources();
-    
-    app.listen(PORT, () => {
-        console.log("========================================");
-        console.log("🚀 SERVIDOR IPTV + PAINEL ADMIN RODANDO");
-        console.log(`📡 Porta: ${PORT}`);
-        console.log(`💾 Banco de dados: ${DB_FILE}`);
-        console.log(`🔗 Fontes M3U: ${m3uSources.length}`);
-        console.log("========================================");
-        console.log("Endpoints:");
-        console.log(`➜ IPTV API: http://localhost:${PORT}/player_api.php`);
-        console.log(`➜ Painel Admin: http://localhost:${PORT}/admin`);
-        console.log("========================================");
-        console.log("Login padrão do painel:");
-        console.log("Usuário: klord");
-        console.log("Senha: Kl0rd777");
-        console.log("========================================");
-        console.log("🆕 NOVAS FUNCIONALIDADES:");
-        console.log("   ✅ Suporte a URLs M3U externas");
-        console.log("   ✅ Contas de teste (1 hora)");
-        console.log("   ✅ INTEGRAÇÃO GITHUB - Auto sync");
-        console.log("   ✅ Auto-deploy no Render");
-        console.log("========================================");
-        console.log("Config GitHub:");
-        console.log(`   Repo: ${CONFIG.GITHUB_OWNER}/${CONFIG.GITHUB_REPO}`);
-        console.log(`   Arquivo: ${CONFIG.GITHUB_FILE_PATH}`);
-        console.log(`   Branch: ${CONFIG.GITHUB_BRANCH}`);
-        console.log("========================================");
-    });
-}
-
-initialize();
-
-
-
-
+app.listen(PORT, () => {
+    console.log("========================================");
+    console.log("🚀 SERVIDOR IPTV + PAINEL ADMIN RODANDO");
+    console.log(`📡 Porta: ${PORT}`);
+    console.log(`📁 Arquivo: playlist.m3u`);
+    console.log(`💾 Banco de dados: ${DB_FILE}`);
+    console.log("========================================");
+    console.log("Endpoints:");
+    console.log(`➜ IPTV API: http://localhost:${PORT}/player_api.php`);
+    console.log(`➜ Painel Admin: http://localhost:${PORT}/admin`);
+    console.log("========================================");
+    console.log("Login padrão do painel:");
+    console.log("Usuário: klord");
+    console.log("Senha: Kl0rd777");
+    console.log("========================================");
+});
