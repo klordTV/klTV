@@ -2,6 +2,9 @@ const fs = require("fs");
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
+const http = require("http");
+const https = require("https");
+const url = require("url");
 
 const app = express();
 const PORT = 3000;
@@ -43,8 +46,7 @@ function loadDatabase() {
             const data = fs.readFileSync(DB_FILE, "utf8");
             db = JSON.parse(data);
             console.log("💾 Banco de dados carregado");
-            
-            // Verificar se admin existe, se não criar
+
             const adminExists = db.users.find(u => u.isAdmin === true);
             if (!adminExists) {
                 console.log("⚠️ Admin não encontrado, criando novo...");
@@ -64,9 +66,8 @@ function loadDatabase() {
 
 // Criar admin padrão
 function createDefaultAdmin() {
-    // Remover qualquer admin existente para garantir
     db.users = db.users.filter(u => !u.isAdmin);
-    
+
     const adminUser = {
         id: "admin",
         username: "klord",
@@ -79,7 +80,7 @@ function createDefaultAdmin() {
         status: "Active",
         notes: "Administrador do sistema"
     };
-    
+
     db.users.push(adminUser);
     saveDatabase();
     console.log("✅ Admin criado: klord / Kl0rd777");
@@ -122,6 +123,136 @@ function isExpired(user) {
     return new Date(user.expiresAt) < new Date();
 }
 
+// ==================== FUNÇÃO PROXY STREAMING MELHORADA ====================
+
+// Configurações do proxy
+const PROXY_CONFIG = {
+    timeout: 60000,        // 60 segundos de timeout
+    highWaterMark: 65536 // 64KB buffer
+};
+
+function proxyStream(streamUrl, req, res) {
+    try {
+        const parsedUrl = new URL(streamUrl);
+        const isHttps = parsedUrl.protocol === 'https:';
+        const httpModule = isHttps ? https : http;
+
+        // Headers otimizados para compatibilidade máxima
+        const options = {
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port || (isHttps ? 443 : 80),
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: 'GET',
+            timeout: PROXY_CONFIG.timeout,
+            headers: {
+                'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': '*/*',
+                'Accept-Encoding': 'identity;q=1, *;q=0',
+                'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'Pragma': 'no-cache',
+                'Icy-MetaData': '1'
+            }
+        };
+
+        // Preservar headers importantes do cliente original
+        if (req.headers['range']) {
+            options.headers['Range'] = req.headers['range'];
+        }
+        if (req.headers['cookie']) {
+            options.headers['Cookie'] = req.headers['cookie'];
+        }
+        if (req.headers['referer']) {
+            options.headers['Referer'] = req.headers['referer'];
+        }
+
+        const proxyReq = httpModule.request(options, (proxyRes) => {
+            // Se for redirect, seguir automaticamente (até 3 níveis)
+            if ([301, 302, 307, 308].includes(proxyRes.statusCode)) {
+                const newUrl = proxyRes.headers.location;
+                if (newUrl) {
+                    console.log(`🔄 Redirect detectado: ${newUrl.substring(0, 80)}...`);
+                    return proxyStream(newUrl, req, res);
+                }
+            }
+
+            // Definir status
+            res.statusCode = proxyRes.statusCode;
+
+            // Headers que devem ser copiados para o cliente
+            const headersToCopy = [
+                'content-type', 'content-length', 'content-range', 
+                'accept-ranges', 'cache-control', 'etag', 'last-modified',
+                'icy-metadata', 'icy-name', 'icy-genre', 'icy-br', 'icy-description'
+            ];
+
+            headersToCopy.forEach(header => {
+                if (proxyRes.headers[header]) {
+                    res.setHeader(header, proxyRes.headers[header]);
+                }
+            });
+
+            // Garantir content-type apropriado se não estiver presente
+            if (!proxyRes.headers['content-type']) {
+                if (streamUrl.includes('.ts') || req.path.includes('.ts')) {
+                    res.setHeader('Content-Type', 'video/MP2T');
+                } else if (streamUrl.includes('.mp4') || req.path.includes('.mp4')) {
+                    res.setHeader('Content-Type', 'video/mp4');
+                } else if (streamUrl.includes('.m3u') || streamUrl.includes('.m3u8')) {
+                    res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+                } else {
+                    res.setHeader('Content-Type', 'video/mp2t'); // Default para streams
+                }
+            }
+
+            // Permitir CORS
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges');
+
+            // Pipe com tratamento de erro
+            proxyRes.on('error', (err) => {
+                console.error('❌ Erro no stream de origem:', err.message);
+                if (!res.headersSent) {
+                    res.status(502).end();
+                } else {
+                    res.end();
+                }
+            });
+
+            proxyRes.pipe(res, { end: true });
+        });
+
+        proxyReq.on('error', (err) => {
+            console.error('❌ Erro na requisição proxy:', err.message);
+            if (!res.headersSent) {
+                res.status(502).send('Erro ao conectar ao stream');
+            }
+        });
+
+        proxyReq.on('timeout', () => {
+            console.error('⏱️ Timeout na requisição');
+            proxyReq.destroy();
+            if (!res.headersSent) {
+                res.status(504).send('Timeout do stream');
+            }
+        });
+
+        // Fechar conexão se cliente desconectar
+        req.on('close', () => {
+            proxyReq.destroy();
+        });
+
+        proxyReq.end();
+
+    } catch (error) {
+        console.error('❌ Erro ao criar proxy:', error);
+        if (!res.headersSent) {
+            res.status(500).send('Erro interno do servidor');
+        }
+    }
+}
+
 // ==================== DADOS IPTV ====================
 
 let live = [];
@@ -143,7 +274,7 @@ let catIdCounters = {
 function parseM3U() {
     try {
         const filePath = path.join(__dirname, "playlist.m3u");
-        
+
         if (!fs.existsSync(filePath)) {
             console.error("⚠️  Arquivo playlist.m3u não encontrado!");
             return;
@@ -151,7 +282,7 @@ function parseM3U() {
 
         const content = fs.readFileSync(filePath, "utf8");
         const lines = content.split(/\r?\n/);
-        
+
         let current = null;
         let id = 1;
 
@@ -162,15 +293,15 @@ function parseM3U() {
             if (line.startsWith("#EXTINF")) {
                 const tvgNameMatch = line.match(/tvg-name="([^"]*)"/);
                 let name = tvgNameMatch ? tvgNameMatch[1] : "";
-                
+
                 if (!name) {
                     const commaIndex = line.lastIndexOf(",");
                     name = commaIndex !== -1 ? line.substring(commaIndex + 1).trim() : "Sem Nome";
                 }
-                
+
                 const groupMatch = line.match(/group-title="([^"]*)"/i);
                 let group = groupMatch ? groupMatch[1] : "OUTROS";
-                
+
                 const logoMatch = line.match(/tvg-logo="([^"]*)"/i);
                 let icon = logoMatch ? logoMatch[1] : "";
 
@@ -185,7 +316,7 @@ function parseM3U() {
             else if (line.startsWith("http") && current) {
                 current.url = line;
                 const groupUpper = current.group.toUpperCase();
-                
+
                 if (groupUpper.startsWith("FILMES") || groupUpper.startsWith("FILME")) {
                     parseMovie(current);
                 }
@@ -210,7 +341,7 @@ function parseM3U() {
         console.log(`   Canais: ${live.length} (categorias: ${categories.live.length})`);
         console.log(`   Filmes: ${vod.length} (categorias: ${categories.vod.length})`);
         console.log(`   Séries: ${Object.keys(series).length} (categorias: ${categories.series.length})`);
-        
+
     } catch (error) {
         console.error("ERRO ao parsear M3U:", error.message);
     }
@@ -221,16 +352,16 @@ function getOrCreateCategory(group, type) {
         const catId = catIdCounters[type].toString();
         groupToId[group] = catId;
         catIdCounters[type]++;
-        
+
         const parts = group.split("|");
         const catName = parts[1] ? parts[1].trim() : group;
-        
+
         const catObj = {
             category_id: catId,
             category_name: catName,
             parent_id: 0
         };
-        
+
         if (type === "live") categories.live.push(catObj);
         else if (type === "vod") categories.vod.push(catObj);
         else if (type === "series") categories.series.push(catObj);
@@ -240,7 +371,7 @@ function getOrCreateCategory(group, type) {
 
 function parseLive(item) {
     const categoryId = getOrCreateCategory(item.group, "live");
-    
+
     live.push({
         num: live.length + 1,
         name: item.name,
@@ -262,7 +393,7 @@ function parseMovie(item) {
     const yearMatch = item.name.match(/\((\d{4})\)$/);
     const year = yearMatch ? yearMatch[1] : "";
     const cleanName = item.name.replace(/\s*\(\d{4}\)$/, "").trim();
-    
+
     vod.push({
         num: vod.length + 1,
         name: cleanName,
@@ -285,7 +416,7 @@ function parseSeries(item) {
         console.log(`⚠️  Episódio não reconhecido: ${item.name}`);
         return;
     }
-    
+
     const season = parseInt(match[1]);
     const episode = parseInt(match[2]);
     let serieName = item.name.substring(0, match.index).trim();
@@ -338,7 +469,7 @@ function parseSeries(item) {
 app.get("/player_api.php", (req, res) => {
     const { username, password, action } = req.query;
     const user = db.users.find(u => u.username === username && u.password === password);
-    
+
     if (!user) {
         return res.json({ user_info: { auth: 0, status: "Invalid" } });
     }
@@ -356,7 +487,7 @@ app.get("/player_api.php", (req, res) => {
     if (!action) {
         user.activeConnections++;
         saveDatabase();
-        
+
         return res.json({
             user_info: {
                 username: user.username,
@@ -463,13 +594,18 @@ app.get("/player_api.php", (req, res) => {
     res.json({ error: "Ação não suportada", action });
 });
 
-// Endpoints de streaming
+// Endpoints de streaming COM PROXY
+
 app.get("/live/:username/:password/:stream_id.ts", (req, res) => {
     const { username, password, stream_id } = req.params;
     const user = db.users.find(u => u.username === username && u.password === password);
     if (!user || isExpired(user)) return res.status(403).send("Acesso negado");
+
     const channel = live.find(c => c.stream_id === stream_id);
-    if (channel && channel.direct_source) return res.redirect(channel.direct_source);
+    if (channel && channel.direct_source) {
+        console.log(`📺 Proxy Live: ${channel.name} (${channel.direct_source.substring(0, 60)}...)`);
+        return proxyStream(channel.direct_source, req, res);
+    }
     res.status(404).send("Stream não encontrado");
 });
 
@@ -477,8 +613,12 @@ app.get("/movie/:username/:password/:stream_id.mp4", (req, res) => {
     const { username, password, stream_id } = req.params;
     const user = db.users.find(u => u.username === username && u.password === password);
     if (!user || isExpired(user)) return res.status(403).send("Acesso negado");
+
     const movie = vod.find(v => v.stream_id === stream_id);
-    if (movie && movie.direct_source) return res.redirect(movie.direct_source);
+    if (movie && movie.direct_source) {
+        console.log(`🎬 Proxy Movie: ${movie.name}`);
+        return proxyStream(movie.direct_source, req, res);
+    }
     res.status(404).send("Filme não encontrado");
 });
 
@@ -486,14 +626,46 @@ app.get("/series/:username/:password/:stream_id.mp4", (req, res) => {
     const { username, password, stream_id } = req.params;
     const user = db.users.find(u => u.username === username && u.password === password);
     if (!user || isExpired(user)) return res.status(403).send("Acesso negado");
+
     for (let serieName in series) {
         const serie = series[serieName];
         for (let seasonNum in serie.seasons) {
             const ep = serie.seasons[seasonNum].find(e => e.id === stream_id);
-            if (ep) return res.redirect(ep.url);
+            if (ep) {
+                console.log(`📺 Proxy Series: ${serieName} - ${ep.title}`);
+                return proxyStream(ep.url, req, res);
+            }
         }
     }
     res.status(404).send("Episódio não encontrado");
+});
+
+// Endpoint para gerar lista M3U
+app.get("/get.php", (req, res) => {
+    const { username, password, type } = req.query;
+    const user = db.users.find(u => u.username === username && u.password === password);
+
+    if (!user || isExpired(user)) {
+        return res.status(403).send("Acesso negado");
+    }
+
+    let m3u = "#EXTM3U\n";
+
+    live.forEach(channel => {
+        const catName = categories.live.find(c => c.category_id === channel.category_id)?.category_name || 'LIVE';
+        m3u += `#EXTINF:-1 tvg-id="${channel.stream_id}" tvg-name="${channel.name}" tvg-logo="${channel.stream_icon}" group-title="${catName}",${channel.name}\n`;
+        m3u += `${req.protocol}://${req.get('host')}/live/${username}/${password}/${channel.stream_id}.ts\n`;
+    });
+
+    vod.forEach(movie => {
+        const catName = categories.vod.find(c => c.category_id === movie.category_id)?.category_name || 'VOD';
+        m3u += `#EXTINF:-1 tvg-id="${movie.stream_id}" tvg-name="${movie.name}" tvg-logo="${movie.stream_icon}" group-title="${catName}",${movie.name}\n`;
+        m3u += `${req.protocol}://${req.get('host')}/movie/${username}/${password}/${movie.stream_id}.mp4\n`;
+    });
+
+    res.setHeader('Content-Type', 'application/x-mpegURL');
+    res.setHeader('Content-Disposition', 'attachment; filename="playlist.m3u"');
+    res.send(m3u);
 });
 
 // ==================== PAINEL ADMINISTRATIVO ====================
@@ -571,15 +743,6 @@ app.get("/admin", (req, res) => {
             margin-top: 15px;
             display: none;
         }
-        .debug-info {
-            margin-top: 20px;
-            padding: 10px;
-            background: #f0f0f0;
-            border-radius: 5px;
-            font-size: 12px;
-            color: #666;
-            display: none;
-        }
     </style>
 </head>
 <body>
@@ -596,40 +759,27 @@ app.get("/admin", (req, res) => {
             </div>
             <button type="submit" class="btn">Entrar</button>
             <div id="error" class="error">Usuário ou senha incorretos</div>
-            <div id="debug" class="debug-info"></div>
         </form>
     </div>
-
     <script>
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
-            
-            console.log('Tentando login com:', username);
-            
             try {
                 const res = await fetch('/admin/api/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username, password })
                 });
-                
                 const data = await res.json();
-                console.log('Resposta:', data);
-                
                 if (data.success) {
                     localStorage.setItem('adminToken', data.token);
                     window.location.href = '/admin/dashboard';
                 } else {
                     document.getElementById('error').style.display = 'block';
-                    if (data.debug) {
-                        document.getElementById('debug').style.display = 'block';
-                        document.getElementById('debug').textContent = 'Debug: ' + data.debug;
-                    }
                 }
             } catch (err) {
-                console.error('Erro:', err);
                 document.getElementById('error').textContent = 'Erro de conexão';
                 document.getElementById('error').style.display = 'block';
             }
@@ -639,51 +789,27 @@ app.get("/admin", (req, res) => {
 </html>`);
 });
 
-// API de login do painel - COM DEBUG
 app.post("/admin/api/login", (req, res) => {
     const { username, password } = req.body;
-    
-    console.log("Tentativa de login:", username, "Senha recebida:", password);
-    console.log("Usuários no banco:", db.users.map(u => ({ user: u.username, isAdmin: u.isAdmin })));
-    
-    // Buscar usuário
     const user = db.users.find(u => u.username === username && u.password === password);
-    
-    console.log("Usuário encontrado:", user ? "SIM" : "NÃO");
-    
-    if (user) {
-        console.log("isAdmin:", user.isAdmin);
-    }
-    
-    // Verificar se é admin
+
     if (user && user.isAdmin === true) {
         const token = generateId();
         activeTokens.add(token);
-        console.log("Login bem-sucedido, token gerado:", token.substring(0, 8) + "...");
         return res.json({ success: true, token, user: { username: user.username, isAdmin: true } });
     } else {
-        let debugMsg = "";
-        if (!user) debugMsg = "Usuário/senha não encontrado";
-        else if (!user.isAdmin) debugMsg = "Usuário não é admin";
-        
-        console.log("Login falhou:", debugMsg);
-        return res.json({ success: false, debug: debugMsg });
+        return res.json({ success: false });
     }
 });
 
-// Middleware para verificar token válido
 function verifyToken(req, res, next) {
     const token = req.headers.authorization;
-    console.log("Verificando token:", token ? token.substring(0, 8) + "..." : "nenhum");
-    
     if (!token || !activeTokens.has(token)) {
-        console.log("Token inválido ou não encontrado");
         return res.status(401).json({ error: "Não autorizado" });
     }
     next();
 }
 
-// Dashboard do painel
 app.get("/admin/dashboard", (req, res) => {
     res.send(`<!DOCTYPE html>
 <html lang="pt-BR">
@@ -741,7 +867,6 @@ app.get("/admin/dashboard", (req, res) => {
         <div class="nav-item" onclick="showSection('settings')"><span>⚙️</span> Configurações</div>
         <div class="nav-item" onclick="logout()"><span>🚪</span> Sair</div>
     </div>
-
     <div class="main-content">
         <div id="dashboard-section">
             <div class="header">
@@ -760,7 +885,6 @@ app.get("/admin/dashboard", (req, res) => {
                 <table id="recentUsers"><thead><tr><th>Usuário</th><th>Criado em</th><th>Expira em</th><th>Status</th></tr></thead><tbody></tbody></table>
             </div>
         </div>
-
         <div id="users-section" class="hidden">
             <div class="header">
                 <h1>Gerenciar Usuários</h1>
@@ -771,14 +895,12 @@ app.get("/admin/dashboard", (req, res) => {
                 <table id="usersTable"><thead><tr><th>Usuário</th><th>Senha</th><th>Tipo</th><th>Criado em</th><th>Expira em</th><th>Conexões</th><th>Status</th><th>Ações</th></tr></thead><tbody></tbody></table>
             </div>
         </div>
-
         <div id="content-section" class="hidden">
             <div class="header"><h1>Conteúdo do Servidor</h1><button class="btn-primary" onclick="location.reload()">🔄 Recarregar M3U</button></div>
             <div class="section"><h2>📺 Canais (${live.length})</h2><p>${categories.live.length} categorias</p></div>
             <div class="section"><h2>🎬 Filmes (${vod.length})</h2><p>${categories.vod.length} categorias</p></div>
             <div class="section"><h2>📺 Séries (${Object.keys(series).length})</h2><p>${categories.series.length} categorias</p></div>
         </div>
-
         <div id="settings-section" class="hidden">
             <div class="header"><h1>Configurações</h1></div>
             <div class="section">
@@ -790,7 +912,6 @@ app.get("/admin/dashboard", (req, res) => {
             </div>
         </div>
     </div>
-
     <div id="createUserModal" class="modal">
         <div class="modal-content">
             <h2>Criar Novo Usuário</h2>
@@ -807,7 +928,6 @@ app.get("/admin/dashboard", (req, res) => {
             </form>
         </div>
     </div>
-
     <div id="editUserModal" class="modal">
         <div class="modal-content">
             <h2>Editar Usuário</h2>
@@ -826,22 +946,18 @@ app.get("/admin/dashboard", (req, res) => {
             </form>
         </div>
     </div>
-
     <script>
         let users = [];
         let currentSection = 'dashboard';
-
         if (!localStorage.getItem('adminToken')) {
             window.location.href = '/admin';
         }
-
         document.addEventListener('DOMContentLoaded', () => {
             loadDashboard();
             loadUsers();
             document.getElementById('createUserForm').addEventListener('submit', handleCreateUser);
             document.getElementById('editUserForm').addEventListener('submit', handleEditUser);
         });
-
         function showSection(section) {
             document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
             event.target.closest('.nav-item').classList.add('active');
@@ -852,7 +968,6 @@ app.get("/admin/dashboard", (req, res) => {
             document.getElementById(section + '-section').classList.remove('hidden');
             currentSection = section;
         }
-
         async function loadDashboard() {
             const res = await fetch('/admin/api/stats', { headers: { 'Authorization': localStorage.getItem('adminToken') }});
             if (res.status === 401) { logout(); return; }
@@ -862,36 +977,31 @@ app.get("/admin/dashboard", (req, res) => {
             document.getElementById('expiredUsers').textContent = data.expiredUsers;
             document.getElementById('totalContent').textContent = data.content.live + ' / ' + data.content.vod + ' / ' + data.content.series;
             const tbody = document.querySelector('#recentUsers tbody');
-            tbody.innerHTML = data.recentUsers.map(u => \`<tr><td>\${u.username}</td><td>\${new Date(u.createdAt).toLocaleDateString('pt-BR')}</td><td>\${u.expiresAt === 'never' ? 'Nunca' : new Date(u.expiresAt).toLocaleDateString('pt-BR')}</td><td class="\${u.status === 'Active' ? 'status-active' : 'status-expired'}">\${u.status}</td></tr>\`).join('');
+            tbody.innerHTML = data.recentUsers.map(u => '<tr><td>' + u.username + '</td><td>' + new Date(u.createdAt).toLocaleDateString('pt-BR') + '</td><td>' + (u.expiresAt === 'never' ? 'Nunca' : new Date(u.expiresAt).toLocaleDateString('pt-BR')) + '</td><td class="' + (u.status === 'Active' ? 'status-active' : 'status-expired') + '">' + u.status + '</td></tr>').join('');
             document.getElementById('currentDate').textContent = new Date().toLocaleDateString('pt-BR');
             document.getElementById('currentUser').textContent = 'Admin';
         }
-
         async function loadUsers() {
             const res = await fetch('/admin/api/users', { headers: { 'Authorization': localStorage.getItem('adminToken') }});
             if (res.status === 401) { logout(); return; }
             users = await res.json();
             renderUsers(users);
         }
-
         function renderUsers(userList) {
             const tbody = document.querySelector('#usersTable tbody');
             tbody.innerHTML = userList.map(u => {
                 const isExpired = new Date(u.expiresAt) < new Date() && u.expiresAt !== 'never';
                 const statusClass = isExpired ? 'status-expired' : (u.status === 'Active' ? 'status-active' : 'status-expired');
                 const statusText = isExpired ? 'EXPIRADO' : u.status;
-                return \`<tr><td><strong>\${u.username}</strong></td><td><span class="copy-link" onclick="copyToClipboard('\${u.password}')" title="Copiar senha">\${u.password.substring(0, 8)}...</span></td><td><span class="badge \${u.isAdmin ? 'badge-admin' : 'badge-user'}">\${u.isAdmin ? 'Admin' : 'User'}</span></td><td>\${new Date(u.createdAt).toLocaleDateString('pt-BR')}</td><td>\${u.expiresAt === 'never' ? 'Nunca' : new Date(u.expiresAt).toLocaleDateString('pt-BR')}</td><td>\${u.activeConnections} / \${u.maxConnections}</td><td class="\${statusClass}">\${statusText}</td><td><button class="btn-success" onclick="copyLink('\${u.username}', '\${u.password}')">🔗 Link</button><button class="btn-warning" onclick="editUser('\${u.id}')">✏️</button><button class="btn-danger" onclick="deleteUser('\${u.id}')" \${u.isAdmin ? 'disabled' : ''}>🗑️</button></td></tr>\`;
+                return '<tr><td><strong>' + u.username + '</strong></td><td><span class="copy-link" onclick="copyToClipboard(' + "'" + u.password + "'" + ')" title="Copiar senha">' + u.password.substring(0, 8) + '...</span></td><td><span class="badge ' + (u.isAdmin ? 'badge-admin' : 'badge-user') + '">' + (u.isAdmin ? 'Admin' : 'User') + '</span></td><td>' + new Date(u.createdAt).toLocaleDateString('pt-BR') + '</td><td>' + (u.expiresAt === 'never' ? 'Nunca' : new Date(u.expiresAt).toLocaleDateString('pt-BR')) + '</td><td>' + u.activeConnections + ' / ' + u.maxConnections + '</td><td class="' + statusClass + '">' + statusText + '</td><td><button class="btn-success" onclick="copyLink(' + "'" + u.username + "', '" + u.password + "'" + ')">🔗 Link</button><button class="btn-warning" onclick="editUser(' + "'" + u.id + "'" + ')">✏️</button><button class="btn-danger" onclick="deleteUser(' + "'" + u.id + "'" + ')" ' + (u.isAdmin ? 'disabled' : '') + '>🗑️</button></td></tr>';
             }).join('');
         }
-
         function searchUsers() {
             const term = document.getElementById('searchUsers').value.toLowerCase();
-            renderUsers(users.filter(u => u.username.toLowerCase().includes(term) || u.notes?.toLowerCase().includes(term)));
+            renderUsers(users.filter(u => u.username.toLowerCase().includes(term) || (u.notes && u.notes.toLowerCase().includes(term))));
         }
-
         function openModal(modal) { document.getElementById(modal + 'Modal').style.display = 'flex'; }
         function closeModal(modal) { document.getElementById(modal + 'Modal').style.display = 'none'; }
-
         async function handleCreateUser(e) {
             e.preventDefault();
             const data = {
@@ -909,7 +1019,7 @@ app.get("/admin/dashboard", (req, res) => {
             if (res.status === 401) { logout(); return; }
             const result = await res.json();
             if (result.success) {
-                alert(\`Usuário criado!\\nUsuário: \${result.user.username}\\nSenha: \${result.user.password}\`);
+                alert('Usuário criado!\nUsuário: ' + result.user.username + '\nSenha: ' + result.user.password);
                 closeModal('createUser');
                 loadUsers();
                 loadDashboard();
@@ -918,7 +1028,6 @@ app.get("/admin/dashboard", (req, res) => {
                 alert('Erro: ' + result.error);
             }
         }
-
         async function editUser(id) {
             const user = users.find(u => u.id === id);
             if (!user) return;
@@ -931,7 +1040,6 @@ app.get("/admin/dashboard", (req, res) => {
             document.getElementById('editNotes').value = user.notes || '';
             openModal('editUser');
         }
-
         async function handleEditUser(e) {
             e.preventDefault();
             const id = document.getElementById('editUserId').value;
@@ -957,7 +1065,6 @@ app.get("/admin/dashboard", (req, res) => {
                 alert('Erro: ' + result.error);
             }
         }
-
         async function deleteUser(id) {
             if (!confirm('Tem certeza que deseja excluir este usuário?')) return;
             const res = await fetch('/admin/api/users/' + id, {
@@ -971,15 +1078,12 @@ app.get("/admin/dashboard", (req, res) => {
                 loadDashboard();
             }
         }
-
         function copyLink(username, password) {
-            const url = \`\${window.location.origin}/get.php?username=\${username}&password=\${password}&type=m3u_plus\`;
+            const url = window.location.origin + '/get.php?username=' + username + '&password=' + password + '&type=m3u_plus';
             copyToClipboard(url);
             alert('Link M3U copiado para a área de transferência!');
         }
-
         function copyToClipboard(text) { navigator.clipboard.writeText(text); }
-
         async function saveSettings() {
             const data = {
                 serverName: document.getElementById('serverName').value,
@@ -995,12 +1099,10 @@ app.get("/admin/dashboard", (req, res) => {
             const result = await res.json();
             if (result.success) alert('Configurações salvas!');
         }
-
         function logout() {
             localStorage.removeItem('adminToken');
             window.location.href = '/admin';
         }
-
         window.onclick = function(event) {
             if (event.target.classList.contains('modal')) {
                 event.target.style.display = 'none';
@@ -1011,13 +1113,11 @@ app.get("/admin/dashboard", (req, res) => {
 </html>`);
 });
 
-// API Admin - Estatísticas
 app.get("/admin/api/stats", verifyToken, (req, res) => {
     const totalUsers = db.users.length;
     const activeUsers = db.users.filter(u => !isExpired(u) && u.status === "Active").length;
     const expiredUsers = db.users.filter(u => isExpired(u)).length;
     const recentUsers = [...db.users].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 5);
-
     res.json({
         totalUsers,
         activeUsers,
@@ -1027,17 +1127,15 @@ app.get("/admin/api/stats", verifyToken, (req, res) => {
     });
 });
 
-// API Admin - Listar usuários
 app.get("/admin/api/users", verifyToken, (req, res) => {
     res.json(db.users.map(u => ({ ...u, isExpired: isExpired(u) })));
 });
 
-// API Admin - Criar usuário
 app.post("/admin/api/users", verifyToken, (req, res) => {
     const { username, password, expiryDays, maxConnections, notes } = req.body;
     const finalUsername = username || "user" + Math.floor(Math.random() * 10000);
     const finalPassword = password || generatePassword();
-    
+
     if (db.users.find(u => u.username === finalUsername)) {
         return res.json({ success: false, error: "Usuário já existe" });
     }
@@ -1060,7 +1158,6 @@ app.post("/admin/api/users", verifyToken, (req, res) => {
     res.json({ success: true, user: newUser });
 });
 
-// API Admin - Editar usuário
 app.put("/admin/api/users/:id", verifyToken, (req, res) => {
     const { id } = req.params;
     const userIndex = db.users.findIndex(u => u.id === id);
@@ -1077,7 +1174,6 @@ app.put("/admin/api/users/:id", verifyToken, (req, res) => {
     res.json({ success: true, user: db.users[userIndex] });
 });
 
-// API Admin - Deletar usuário
 app.delete("/admin/api/users/:id", verifyToken, (req, res) => {
     const { id } = req.params;
     const userIndex = db.users.findIndex(u => u.id === id);
@@ -1089,7 +1185,6 @@ app.delete("/admin/api/users/:id", verifyToken, (req, res) => {
     res.json({ success: true });
 });
 
-// API Admin - Configurações
 app.put("/admin/api/settings", verifyToken, (req, res) => {
     const { serverName, defaultExpiryDays, defaultMaxConnections } = req.body;
     db.settings.serverName = serverName || db.settings.serverName;
